@@ -1,0 +1,10 @@
+{
+  "go.useLanguageServer": true,
+  "go.formatTool": "gofmt",
+  "eslint.validate": ["javascript", "typescript"],
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/.terraform": true,
+    "**/.git": true
+  }
+}
