@@ -7,6 +7,7 @@ import (
     "math/rand"
     "net/http"
     "os"
+    "strings"
     "time"
 
     "github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
