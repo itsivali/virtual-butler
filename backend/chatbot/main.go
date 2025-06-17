@@ -3,6 +3,7 @@ package main
 import (
     "context"
     "encoding/json"
+    "fmt"
     "log"
     "math/rand"
     "net/http"
@@ -56,11 +57,15 @@ func handleChatRequest(w http.ResponseWriter, r *http.Request) {
     }
     requestID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Intn(10000))
     department := routeDepartment(req.Text + " " + req.VoiceTranscript)
-    msg := azservicebus.Message{
+    msg := &azservicebus.Message{ 
         Body: []byte(fmt.Sprintf(`{"requestID":"%s","guestID":"%s","department":"%s","request":"%s"}`,
             requestID, req.GuestID, department, req.Text)),
     }
-    go sbSender.SendMessage(context.Background(), &msg, nil)
+    go func() {
+        if err := sbSender.SendMessage(context.Background(), msg, nil); err != nil {
+            log.Printf("Failed to send message to Service Bus: %v", err)
+        }
+    }()
     resp := &ChatResponse{RequestID: requestID, Status: "received", Department: department}
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(resp)
