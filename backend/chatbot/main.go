@@ -1,82 +1,85 @@
 package main
 
 import (
-	"encoding/json"
-	"fmt"
-	"log"
-	"math/rand"
-	"net/http"
-	"strings"
-	"sync"
-	"time"
+    "context"
+    "encoding/json"
+    "log"
+    "math/rand"
+    "net/http"
+    "os"
+    "time"
+
+    "github.com/Azure/azure-sdk-for-go/sdk/messaging/azservicebus"
+    "github.com/ivali/virtual-butler/backend/common"
 )
 
 type ChatRequest struct {
-    Message string `json:"message"`
+    GuestID         string `json:"guestID"`
+    Text            string `json:"text"`
+    VoiceTranscript string `json:"voiceTranscript,omitempty"`
 }
 
 type ChatResponse struct {
-    ID      string `json:"id"`
-    Status  string `json:"status"`
-    Reply   string `json:"reply,omitempty"`
+    RequestID  string `json:"requestID"`
+    Status     string `json:"status"`
+    Department string `json:"department,omitempty"`
 }
 
 var (
-    statusStore = make(map[string]*ChatResponse)
-    statusLock  sync.RWMutex
+    sbSender *azservicebus.Sender
 )
 
-func generateID() string {
-    return fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Intn(10000))
+var keywordDept = map[string]string{
+    "towel": "Housekeeping",
+    "clean": "Housekeeping",
+    "food": "Room Service",
+    "order": "Room Service",
+    "checkout": "Front Desk",
+    "wifi": "IT",
 }
 
-func simpleNLPRouting(msg string) string {
-    lower := strings.ToLower(msg)
-    switch {
-    case strings.Contains(lower, "hello"):
-        return "Hello! How can I help you today?"
-    case strings.Contains(lower, "weather"):
-        return "The weather is sunny."
-    case strings.Contains(lower, "time"):
-        return time.Now().Format("15:04:05")
-    default:
-        return "Sorry, I didn't understand that."
+func routeDepartment(text string) string {
+    lower := strings.ToLower(text)
+    for k, dept := range keywordDept {
+        if strings.Contains(lower, k) {
+            return dept
+        }
     }
+    return "General"
 }
 
-func handleRequest(w http.ResponseWriter, r *http.Request) {
+func handleChatRequest(w http.ResponseWriter, r *http.Request) {
     var req ChatRequest
-    if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-        http.Error(w, "Invalid request", http.StatusBadRequest)
+    if !common.DecodeJSONBody(w, r, &req) {
         return
     }
-    id := generateID()
-    reply := simpleNLPRouting(req.Message)
-    resp := &ChatResponse{ID: id, Status: "done", Reply: reply}
-    statusLock.Lock()
-    statusStore[id] = resp
-    statusLock.Unlock()
-    w.Header().Set("Content-Type", "application/json")
-    json.NewEncoder(w).Encode(resp)
-}
-
-func handleStatus(w http.ResponseWriter, r *http.Request) {
-    id := strings.TrimPrefix(r.URL.Path, "/api/v1/status/")
-    statusLock.RLock()
-    resp, ok := statusStore[id]
-    statusLock.RUnlock()
-    if !ok {
-        http.Error(w, "Not found", http.StatusNotFound)
-        return
+    requestID := fmt.Sprintf("%d-%d", time.Now().UnixNano(), rand.Intn(10000))
+    department := routeDepartment(req.Text + " " + req.VoiceTranscript)
+    msg := azservicebus.Message{
+        Body: []byte(fmt.Sprintf(`{"requestID":"%s","guestID":"%s","department":"%s","request":"%s"}`,
+            requestID, req.GuestID, department, req.Text)),
     }
+    go sbSender.SendMessage(context.Background(), &msg, nil)
+    resp := &ChatResponse{RequestID: requestID, Status: "received", Department: department}
     w.Header().Set("Content-Type", "application/json")
     json.NewEncoder(w).Encode(resp)
 }
 
 func main() {
     rand.Seed(time.Now().UnixNano())
-    http.HandleFunc("/api/v1/request", handleRequest)
-    http.HandleFunc("/api/v1/status/", handleStatus)
-    log.Println("Chatbot service running on :8080")
-    log.Fatal(http.ListenAndServe(":8080", nil))
+    sbConnStr := os.Getenv("AZURE_SERVICEBUS_CONNECTION_STRING")
+    sbQueue := os.Getenv("AZURE_SERVICEBUS_QUEUE")
+    sbClient, err := azservicebus.NewClientFromConnectionString(sbConnStr, nil)
+    if err != nil {
+        log.Fatalf("Failed to create Service Bus client: %v", err)
+    }
+    sbSender, err = sbClient.NewSender(sbQueue, nil)
+    if err != nil {
+        log.Fatalf("Failed to create Service Bus sender: %v", err)
+    }
+
+    mux := http.NewServeMux()
+    mux.Handle("/api/v1/chat/request", common.CORSMiddleware(common.JWTAuthMiddleware(http.HandlerFunc(handleChatRequest))))
+    log.Println("Chat Service running on :8081")
+    log.Fatal(http.ListenAndServe(":8081", mux))
 }
