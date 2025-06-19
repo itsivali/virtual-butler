@@ -1,0 +1,39 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Start Frontend",
+            "type": "npm",
+            "script": "start",
+            "path": "frontend/",
+            "problemMatcher": [],
+            "isBackground": true
+        },
+        {
+            "label": "Start Backend",
+            "type": "shell",
+            "command": "${workspaceFolder}/backend/venv/bin/python",
+            "args": [
+                "${workspaceFolder}/backend/main.py"
+            ],
+            "problemMatcher": []
+        },
+        {
+            "label": "Start Full Stack",
+            "dependsOn": ["Start Frontend", "Start Backend"],
+            "problemMatcher": []
+        },
+        {
+            "label": "Python: Run Tests",
+            "type": "shell",
+            "command": "${workspaceFolder}/backend/venv/bin/pytest",
+            "options": {
+                "cwd": "${workspaceFolder}/backend"
+            },
+            "group": {
+                "kind": "test",
+                "isDefault": true
+            }
+        }
+    ]
+}
