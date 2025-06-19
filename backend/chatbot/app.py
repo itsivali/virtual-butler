@@ -1,33 +1,77 @@
-from fastapi import FastAPI, Request
-from pydantic import BaseModel
-import uuid, datetime
-from pymongo import MongoClient
-import os
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from ..shared.db.models import ChatRequest, StatusEnum
+from ..shared.db.database import Database
+import uuid
+from datetime import datetime
 
 app = FastAPI()
 
-client = MongoClient(os.getenv("MONGO_URI", "mongodb://mongo:27017"))
-db = client.virtualbutler
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-class RequestModel(BaseModel):
-    guestId: str
-    text: str
+@app.on_event("startup")
+async def startup_db_client():
+    await Database.connect_db()
+
+    if Database.db is not None and (not hasattr(Database, "chat_requests") or Database.chat_requests is None):
+        Database.chat_requests = Database.db["chat_requests"]
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    await Database.close_db()
 
 @app.post("/api/v1/request")
-async def create_request(data: RequestModel):
-    request_id = str(uuid.uuid4())
-    db.requests.insert_one({
-        "requestId": request_id,
-        "guestId": data.guestId,
-        "text": data.text,
-        "status": "Pending",
-        "createdAt": datetime.datetime.utcnow()
-    })
-    return {"requestId": request_id}
+async def create_request(request: ChatRequest):
+    try:
+
+        if Database.db is None:
+            await Database.connect_db()
+        if not hasattr(Database, "chat_requests") or Database.chat_requests is None:
+            if Database.db is not None:
+                Database.chat_requests = Database.db["chat_requests"]
+            else:
+                raise HTTPException(status_code=500, detail="Database connection is not initialized.")
+
+        request_dict = {
+            "request_id": str(uuid.uuid4()),
+            "guest_id": request.guest_id,
+            "message": request.message,
+            "status": StatusEnum.PENDING,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        }
+        
+        await Database.chat_requests.insert_one(request_dict)
+        return {"requestId": request_dict["request_id"]}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/status/{request_id}")
 async def get_status(request_id: str):
-    req = db.requests.find_one({"requestId": request_id})
-    if req:
-        return {"requestId": request_id, "status": req["status"]}
-    return {"error": "Not found"}
+    try:
+
+        if Database.db is None:
+            await Database.connect_db()
+        if not hasattr(Database, "chat_requests") or Database.chat_requests is None:
+            if Database.db is not None:
+                Database.chat_requests = Database.db["chat_requests"]
+            else:
+                raise HTTPException(status_code=500, detail="Database connection is not initialized.")
+
+        request = await Database.chat_requests.find_one({"request_id": request_id})
+        if request:
+            return {
+                "requestId": request_id,
+                "status": request["status"],
+                "department": request.get("department")
+            }
+        raise HTTPException(status_code=404, detail="Request not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

@@ -1,7 +1,40 @@
+# Web Framework
 fastapi>=0.100.0
-uvicorn>=0.22.0
-pydantic>=2.0.0
+uvicorn[standard]>=0.22.0
+
+# Database
 motor>=3.3.0
 pymongo>=4.5.0
-python-dotenv>=1.0.0
 dnspython>=2.4.0
+
+# Data Validation
+pydantic[email]>=2.0.0
+email-validator>=2.0.0
+
+# Authentication & Security
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+python-multipart>=0.0.6
+
+# Background Tasks & Caching
+fastapi-cache2>=0.2.1
+redis>=4.5.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.1
+pytest-cov>=4.1.0
+httpx>=0.24.1
+pytest-mock>=3.10.0
+
+# Development Tools
+black>=23.7.0
+flake8>=6.1.0
+mypy>=1.0.0
+python-dotenv>=1.0.0
+
+# Logging
+loguru>=0.7.0
+
+# Optional - Development Only
+pre-commit>=3.0.0
