@@ -3,7 +3,7 @@ from fastapi.testclient import TestClient
 from motor.motor_asyncio import AsyncIOMotorClient
 import asyncio
 
-from ..chatbot.app import app
+from ..chatbot.main import app
 
 @pytest.fixture
 def test_client():
