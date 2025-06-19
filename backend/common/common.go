@@ -9,7 +9,13 @@ import (
     "github.com/golang-jwt/jwt/v5"
 )
 
-var jwtSecret = []byte(os.Getenv("JWT_SECRET"))
+func getJWTSecret() []byte {
+    secret := os.Getenv("JWT_SECRET")
+    if secret == "" {
+        panic("JWT_SECRET environment variable not set")
+    }
+    return []byte(secret)
+}
 
 // CORS middleware
 func CORSMiddleware(next http.Handler) http.Handler {
@@ -29,13 +35,13 @@ func CORSMiddleware(next http.Handler) http.Handler {
 func JWTAuthMiddleware(next http.Handler) http.Handler {
     return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
         authHeader := r.Header.Get("Authorization")
-        if !strings.HasPrefix(authHeader, "Bearer ") {
+        if authHeader == "" || !strings.HasPrefix(authHeader, "Bearer ") {
             http.Error(w, "Unauthorized", http.StatusUnauthorized)
             return
         }
         tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
         token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (interface{}, error) {
-            return jwtSecret, nil
+            return getJWTSecret(), nil
         })
         if err != nil || !token.Valid {
             http.Error(w, "Unauthorized", http.StatusUnauthorized)
