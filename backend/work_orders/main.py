@@ -1,15 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.db.database import DatabaseConnection
+import structlog
 
-from shared.db.models import WorkOrder
-from shared.db.database import work_orders
-from datetime import datetime
-
+logger = structlog.get_logger()
 app = FastAPI()
 
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,40 +15,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.post("/api/v1/work-orders", response_model=WorkOrder)
-async def create_work_order(order: WorkOrder):
-    order_dict = order.model_dump(by_alias=True)
-    await work_orders.insert_one(order_dict)
-    return order
+@app.on_event("startup")
+async def startup_db_client():
+    await DatabaseConnection.connect()
 
-@app.get("/api/v1/work-orders/{request_id}", response_model=WorkOrder)
-async def get_work_order(request_id: str):
-    if (order := await work_orders.find_one({"request_id": request_id})) is not None:
-        return order
-    raise HTTPException(status_code=404, detail="Work order not found")
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    await DatabaseConnection.close()
 
-@app.get("/api/v1/work-orders/staff/{staff_id}", response_model=list[WorkOrder])
-async def get_staff_orders(staff_id: str):
-    orders = []
-    cursor = work_orders.find({"staff_id": staff_id})
-    async for order in cursor:
-        orders.append(WorkOrder(**order))
-    return orders
+@app.post("/api/v1/work-orders")
+async def create_work_order(work_order: WorkOrder):
+    try:
+        async with DatabaseConnection.get_connection() as conn:
+            result = await conn.virtualbutler.work_orders.insert_one(
+                work_order.dict(by_alias=True)
+            )
+            return {"id": str(result.inserted_id)}
+    except DatabaseConnection.ConnectionError as e:
+        logger.error("work_order_creation_failed", error=str(e))
+        raise HTTPException(status_code=503, detail="Database connection error")
+    except DatabaseConnection.OperationError as e:
+        logger.error("work_order_operation_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Operation failed")
 
-@app.put("/api/v1/work-orders/{request_id}", response_model=WorkOrder)
-async def update_work_order(request_id: str, order: WorkOrder):
-    order.updated_at = datetime.utcnow()
-    update_result = await work_orders.update_one(
-        {"request_id": request_id},
-        {"$set": order.model_dump(by_alias=True)}
-    )
-    if update_result.modified_count == 0:
-        raise HTTPException(status_code=404, detail="Work order not found")
-    return order
-
-@app.delete("/api/v1/work-orders/{request_id}")
-async def delete_work_order(request_id: str):
-    delete_result = await work_orders.delete_one({"request_id": request_id})
-    if delete_result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Work order not found")
-    return {"message": "Work order deleted"}
+@app.get("/health")
+async def health_check():
+    return await DatabaseConnection.health_check()
