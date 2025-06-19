@@ -75,3 +75,17 @@ async def get_status(request_id: str):
         raise HTTPException(status_code=404, detail="Request not found")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health")
+async def health_check():
+    try:
+        # Check database connection
+        if Database.client:
+            await Database.ping()
+            return {"status": "healthy"}
+        return {"status": "database not connected"}
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Service unhealthy: {str(e)}"
+        )
