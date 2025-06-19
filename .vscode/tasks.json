@@ -20,7 +20,10 @@
         },
         {
             "label": "Start Full Stack",
-            "dependsOn": ["Start Frontend", "Start Backend"],
+            "dependsOn": [
+                "Start Frontend",
+                "Start Backend"
+            ],
             "problemMatcher": []
         },
         {
@@ -33,6 +36,22 @@
             "group": {
                 "kind": "test",
                 "isDefault": true
+            }
+        },
+        {
+            "label": "Start All Backend Services",
+            "type": "shell",
+            "command": "${workspaceFolder}/backend/venv/bin/python",
+            "args": [
+                "${workspaceFolder}/backend/main.py"
+            ],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
             }
         }
     ]
