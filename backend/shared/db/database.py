@@ -76,42 +76,30 @@ class Database:
     async def _create_indexes(cls):
         """Create indexes for all collections."""
         try:
-            # Ensure collections are initialized
+            # Chat Requests indexes
             if cls.chat_requests is not None:
                 await cls.chat_requests.create_indexes([
                     IndexModel("request_id", unique=True),
-                    IndexModel("guest_id"),
-                    IndexModel("status"),
-                    IndexModel("created_at"),
-                    IndexModel([("guest_id", 1), ("status", 1)])
+                    IndexModel([("guest_id", 1), ("created_at", -1)]),
+                    IndexModel([("status", 1), ("department", 1)])
                 ])
-            else:
-                logger.warning("chat_requests collection is not initialized, skipping index creation.")
 
+            # Work Orders indexes
             if cls.work_orders is not None:
                 await cls.work_orders.create_indexes([
                     IndexModel("request_id", unique=True),
-                    IndexModel("guest_id"),
-                    IndexModel("staff_id"),
-                    IndexModel("status"),
-                    IndexModel("priority"),
-                    IndexModel("department"),
-                    IndexModel([("status", 1), ("department", 1)])
+                    IndexModel([("guest_id", 1), ("created_at", -1)]),
+                    IndexModel([("staff_id", 1), ("status", 1)]),
+                    IndexModel([("department", 1), ("priority", -1)])
                 ])
-            else:
-                logger.warning("work_orders collection is not initialized, skipping index creation.")
 
+            # Notifications indexes
             if cls.notifications is not None:
                 await cls.notifications.create_indexes([
-                    IndexModel("request_id"),
-                    IndexModel("guest_id"),
-                    IndexModel("read"),
-                    IndexModel("created_at"),
-                    IndexModel([("guest_id", 1), ("read", 1)]),
-                    IndexModel([("guest_id", 1), ("created_at", -1)])
+                    IndexModel([("guest_id", 1), ("created_at", -1)]),
+                    IndexModel([("request_id", 1), ("type", 1)]),
+                    IndexModel("read")
                 ])
-            else:
-                logger.warning("notifications collection is not initialized, skipping index creation.")
 
             logger.info("Successfully created database indexes")
             

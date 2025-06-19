@@ -1,6 +1,7 @@
 # Ignore node_modules in frontend and backend
 node_modules/
 ../backend/node_modules/
+backend/tests/__pycache__
 
 # Build output
 /dist
