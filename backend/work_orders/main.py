@@ -32,7 +32,6 @@ JWT_SECRET = os.getenv("JWT_SECRET", "supersecret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 WORKORDER_TTL_DAYS = int(os.getenv("WORKORDER_TTL_DAYS", "7"))
 
-# --- Security ---
 
 def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
@@ -50,7 +49,6 @@ def require_staff_role(payload=Depends(verify_jwt)):
         raise HTTPException(status_code=403, detail="Insufficient privileges")
     return payload
 
-# --- Routing Logic ---
 
 DEPARTMENT_KEYWORDS = {
     DepartmentEnum.HOUSEKEEPING: [r"towel|clean|linen|sheet|pillow|blanket"],
@@ -72,7 +70,7 @@ def route_department(message: str) -> DepartmentEnum:
                 return dept
     return DEFAULT_DEPARTMENT
 
-# --- Models ---
+
 
 class WorkOrderCreate(BaseModel):
     guest_id: str
@@ -83,7 +81,6 @@ class WorkOrderCreate(BaseModel):
 class WorkOrderStatusUpdate(BaseModel):
     status: StatusEnum
 
-# --- MongoDB TTL Index Setup ---
 
 async def ensure_ttl_index():
     async with DatabaseConnection.get_connection() as conn:
@@ -96,8 +93,6 @@ async def ensure_ttl_index():
             name="ttl_updated_at"
         )
 
-# --- Event Publishing (Mocked for Local) ---
-
 async def publish_status_event(work_order: dict):
     # TODO: Integrate with Azure Service Bus or Event Grid
     logger.info("status_event_published", work_order_id=work_order.get("work_order_id"), status=work_order.get("status"))
@@ -106,7 +101,6 @@ async def notify_status_change(work_order: dict):
     # TODO: Integrate with Notification Service (HTTP/gRPC/Webhook)
     logger.info("notification_sent", guest_id=work_order.get("guest_id"), status=work_order.get("status"))
 
-# --- Audit Logging ---
 
 async def log_status_change(work_order_id: str, old_status: str, new_status: str, actor: str):
     async with DatabaseConnection.get_connection() as conn:
@@ -117,8 +111,6 @@ async def log_status_change(work_order_id: str, old_status: str, new_status: str
             "changed_by": actor,
             "timestamp": datetime.now(timezone.utc)
         })
-
-# --- API Endpoints ---
 
 from contextlib import asynccontextmanager
 
@@ -202,8 +194,7 @@ async def update_work_order_status(
     except Exception as e:
         logger.error("update_work_order_status_failed", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to update work order status")
-        logger.error("update_work_order_status_failed", error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to update work order status")
+       
 
 @app.get("/healthz")
 async def health_check():
@@ -213,10 +204,7 @@ async def health_check():
 async def readiness_check():
     return {"status": "ready"}
 
-# --- Background Consumer Example (Mocked) ---
-
 async def mock_service_bus_consumer():
     while True:
-        # Simulate consuming a message and creating a work order
        await asyncio.sleep(60)
        logger.info("mock_service_bus_message_consumed")
