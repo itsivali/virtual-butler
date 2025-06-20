@@ -5,7 +5,8 @@ from shared.db.database import DatabaseConnection
 from shared.db.models import ChatRequest, StatusEnum, DepartmentEnum
 from pydantic import BaseModel
 import structlog
-import jwt
+from jose import jwt
+from jose.exceptions import JWTError
 import os
 from typing import List, Optional
 from datetime import datetime
@@ -33,8 +34,7 @@ JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        return payload
-    except jwt.PyJWTError as e:
+    except JWTError as e:
         logger.error("jwt_verification_failed", error=str(e))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -84,6 +84,9 @@ async def create_chat_request(
                 chat_request.department = DepartmentEnum.CONCIERGE
 
         async with DatabaseConnection.get_connection() as conn:
+            if conn is None:
+                logger.error("db_connection_failed", error="Database connection is None")
+                raise HTTPException(status_code=500, detail="Database connection failed")
             result = await conn.virtualbutler.chat_requests.insert_one(
                 chat_request.dict(by_alias=True)
             )
@@ -101,6 +104,9 @@ async def get_chat_request(
 ):
     try:
         async with DatabaseConnection.get_connection() as conn:
+            if conn is None:
+                logger.error("db_connection_failed", error="Database connection is None")
+                raise HTTPException(status_code=500, detail="Database connection failed")
             doc = await conn.virtualbutler.chat_requests.find_one({"request_id": request_id})
             if not doc:
                 raise HTTPException(status_code=404, detail="Chat request not found")
@@ -117,6 +123,9 @@ async def get_guest_chats(
     try:
         chats = []
         async with DatabaseConnection.get_connection() as conn:
+            if conn is None:
+                logger.error("db_connection_failed", error="Database connection is None")
+                raise HTTPException(status_code=500, detail="Database connection failed")
             cursor = conn.virtualbutler.chat_requests.find({"guest_id": guest_id})
             async for doc in cursor:
                 chats.append(ChatRequest(**doc))
@@ -135,6 +144,9 @@ async def update_chat_request(
         update_data = {k: v for k, v in update.dict(exclude_unset=True).items()}
         update_data["updated_at"] = datetime.utcnow()
         async with DatabaseConnection.get_connection() as conn:
+            if conn is None:
+                logger.error("db_connection_failed", error="Database connection is None")
+                raise HTTPException(status_code=500, detail="Database connection failed")
             result = await conn.virtualbutler.chat_requests.find_one_and_update(
                 {"request_id": request_id},
                 {"$set": update_data},
@@ -155,6 +167,9 @@ async def delete_chat_request(
 ):
     try:
         async with DatabaseConnection.get_connection() as conn:
+            if conn is None:
+                logger.error("db_connection_failed", error="Database connection is None")
+                raise HTTPException(status_code=500, detail="Database connection failed")
             result = await conn.virtualbutler.chat_requests.delete_one({"request_id": request_id})
             if result.deleted_count == 0:
                 raise HTTPException(status_code=404, detail="Chat request not found")

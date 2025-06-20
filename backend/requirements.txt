@@ -32,7 +32,8 @@ black>=23.7.0
 flake8>=6.1.0
 mypy>=1.0.0
 python-dotenv>=1.0.0
-
+structlog
+jwt
 # Logging
 loguru>=0.7.0
 
