@@ -71,5 +71,8 @@
     "[css]": {
         "editor.defaultFormatter": "vscode.css-language-features",
         "editor.tabSize": 2
-    }
+    },
+    "cSpell.words": [
+        "virtualbutler"
+    ]
 }

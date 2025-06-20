@@ -12,7 +12,6 @@
 
         // General
         "eamodio.gitlens",
-        "streetsidesoftware.code-spell-checker",
         "gruntfuggly.todo-tree",
         "github.copilot",
         "github.copilot-chat",
