@@ -1,215 +1,111 @@
 import asyncio
 import sys
 import os
-from datetime import datetime, timedelta
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
+from colorama import init, Fore, Style
 
-# Add the backend directory to the Python path
-backend_dir = Path(__file__).parent.parent
+# Initialize colorama
+init(autoreset=True)
+
+# Setup import paths
+backend_dir = Path(__file__).resolve().parent.parent
 sys.path.append(str(backend_dir))
 
-from shared.db.database import Database
+from shared.db.database import DatabaseConnection as Database
 from shared.db.models import StatusEnum, PriorityEnum, NotificationTypeEnum
 
-async def seed_database():
-    await Database.connect_db()
-    
-    # Mock data for chat requests
-    chat_requests = [
-        {
-            "request_id": str(uuid.uuid4()),
-            "guest_id": "G001",
-            "message": "Need extra towels please",
-            "status": StatusEnum.PENDING,
-            "department": "Housekeeping",
-            "tags": ["towels", "housekeeping"],
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
-        },
-        {
-            "request_id": str(uuid.uuid4()),
-            "guest_id": "G002",
-            "message": "Room service menu please",
-            "status": StatusEnum.COMPLETED,
-            "department": "Room Service",
-            "tags": ["food", "menu"],
-            "created_at": datetime.utcnow() - timedelta(hours=2),
-            "updated_at": datetime.utcnow() - timedelta(minutes=30)
-        },
-        {
-            "request_id": str(uuid.uuid4()),
-            "guest_id": "G003",
-            "message": "AC not working",
-            "status": StatusEnum.IN_PROGRESS,
-            "department": "Maintenance",
-            "tags": ["ac", "repair"],
-            "created_at": datetime.utcnow() - timedelta(hours=1),
-            "updated_at": datetime.utcnow() - timedelta(minutes=15)
-        },
-        {
-            "request_id": str(uuid.uuid4()),
-            "guest_id": "G004",
-            "message": "Need late checkout",
-            "status": StatusEnum.ASSIGNED,
-            "department": "Front Desk",
-            "tags": ["checkout", "extension"],
-            "created_at": datetime.utcnow() - timedelta(minutes=45),
-            "updated_at": datetime.utcnow() - timedelta(minutes=10)
-        },
-        {
-            "request_id": str(uuid.uuid4()),
-            "guest_id": "G005",
-            "message": "WiFi not connecting",
-            "status": StatusEnum.PENDING,
-            "department": "IT",
-            "tags": ["wifi", "internet"],
-            "created_at": datetime.utcnow() - timedelta(minutes=15),
-            "updated_at": datetime.utcnow() - timedelta(minutes=15)
-        }
-    ]
-    
-    # Mock data for work orders
-    work_orders = [
-        {
-            "request_id": chat_requests[0]["request_id"],
-            "guest_id": "G001",
-            "staff_id": "S001",
-            "description": "Deliver extra towels to Room 301",
-            "status": StatusEnum.ASSIGNED,
-            "priority": PriorityEnum.MEDIUM,
-            "department": "Housekeeping",
-            "notes": ["Guest requested 2 bath towels"],
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
-        },
-        {
-            "request_id": chat_requests[1]["request_id"],
-            "guest_id": "G002",
-            "staff_id": "S002",
-            "description": "Deliver room service menu to Room 405",
-            "status": StatusEnum.COMPLETED,
-            "priority": PriorityEnum.LOW,
-            "department": "Room Service",
-            "completed_at": datetime.utcnow() - timedelta(minutes=30),
-            "notes": ["Menu delivered", "Guest thanked staff"],
-            "created_at": datetime.utcnow() - timedelta(hours=2),
-            "updated_at": datetime.utcnow() - timedelta(minutes=30)
-        },
-        {
-            "request_id": chat_requests[2]["request_id"],
-            "guest_id": "G003",
-            "staff_id": "S003",
-            "description": "Fix AC in Room 512",
-            "status": StatusEnum.IN_PROGRESS,
-            "priority": PriorityEnum.HIGH,
-            "department": "Maintenance",
-            "notes": ["Technician en route", "Parts may be needed"],
-            "created_at": datetime.utcnow() - timedelta(hours=1),
-            "updated_at": datetime.utcnow() - timedelta(minutes=15)
-        },
-        {
-            "request_id": chat_requests[3]["request_id"],
-            "guest_id": "G004",
-            "staff_id": "S004",
-            "description": "Process late checkout for Room 207",
-            "status": StatusEnum.ASSIGNED,
-            "priority": PriorityEnum.MEDIUM,
-            "department": "Front Desk",
-            "notes": ["Extended until 2 PM", "Additional charge applied"],
-            "created_at": datetime.utcnow() - timedelta(minutes=45),
-            "updated_at": datetime.utcnow() - timedelta(minutes=10)
-        },
-        {
-            "request_id": chat_requests[4]["request_id"],
-            "guest_id": "G005",
-            "staff_id": "S005",
-            "description": "Resolve WiFi connection issues in Room 618",
-            "status": StatusEnum.PENDING,
-            "priority": PriorityEnum.URGENT,
-            "department": "IT",
-            "notes": ["Guest is business traveler", "Needs immediate attention"],
-            "created_at": datetime.utcnow() - timedelta(minutes=15),
-            "updated_at": datetime.utcnow() - timedelta(minutes=15)
-        }
-    ]
-    
-    # Mock data for notifications
-    notifications = [
-        {
-            "request_id": chat_requests[0]["request_id"],
-            "guest_id": "G001",
-            "message": "Your towel request has been received",
-            "type": NotificationTypeEnum.CHAT,
-            "read": False,
-            "action_url": "/requests/" + chat_requests[0]["request_id"],
-            "metadata": {"department": "Housekeeping"},
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
-        },
-        {
-            "request_id": chat_requests[1]["request_id"],
-            "guest_id": "G002",
-            "message": "Room service menu has been delivered",
-            "type": NotificationTypeEnum.WORK_ORDER,
-            "read": True,
-            "action_url": "/requests/" + chat_requests[1]["request_id"],
-            "metadata": {"department": "Room Service", "completed": True},
-            "created_at": datetime.utcnow() - timedelta(hours=2),
-            "updated_at": datetime.utcnow() - timedelta(minutes=30)
-        },
-        {
-            "request_id": chat_requests[2]["request_id"],
-            "guest_id": "G003",
-            "message": "Technician is on the way to fix your AC",
-            "type": NotificationTypeEnum.SYSTEM,
-            "read": False,
-            "action_url": "/requests/" + chat_requests[2]["request_id"],
-            "metadata": {"department": "Maintenance", "eta": "15 minutes"},
-            "created_at": datetime.utcnow() - timedelta(hours=1),
-            "updated_at": datetime.utcnow() - timedelta(minutes=15)
-        },
-        {
-            "request_id": chat_requests[3]["request_id"],
-            "guest_id": "G004",
-            "message": "Late checkout approved until 2 PM",
-            "type": NotificationTypeEnum.ALERT,
-            "read": False,
-            "action_url": "/requests/" + chat_requests[3]["request_id"],
-            "metadata": {"department": "Front Desk", "checkout_time": "14:00"},
-            "created_at": datetime.utcnow() - timedelta(minutes=45),
-            "updated_at": datetime.utcnow() - timedelta(minutes=10)
-        },
-        {
-            "request_id": chat_requests[4]["request_id"],
-            "guest_id": "G005",
-            "message": "IT support has been notified of your WiFi issue",
-            "type": NotificationTypeEnum.SYSTEM,
-            "read": False,
-            "action_url": "/requests/" + chat_requests[4]["request_id"],
-            "metadata": {"department": "IT", "priority": "urgent"},
-            "created_at": datetime.utcnow() - timedelta(minutes=15),
-            "updated_at": datetime.utcnow() - timedelta(minutes=15)
-        }
-    ]
-    
-    # Insert the mock data
+async def insert_documents_bulk(collection, documents, label):
     try:
-        await Database.chat_requests.insert_many(chat_requests)
-        print("Added chat requests")
-        
-        await Database.work_orders.insert_many(work_orders)
-        print("Added work orders")
-        
-        await Database.notifications.insert_many(notifications)
-        print("Added notifications")
-        
-        print("Database seeded successfully!")
-        
+        if documents:
+            await collection.insert_many(documents)
+            print(f"{Fore.GREEN}Inserted {len(documents)} documents into {label} collection.")
+        else:
+            print(f"{Fore.YELLOW}No documents to insert for {label}.")
     except Exception as e:
-        print(f"Error seeding database: {str(e)}")
+        print(f"{Fore.RED}Failed to insert into {label}: {e}")
+
+async def seed_database():
+    await Database.connect()
+
+    now = datetime.utcnow()
+
+    chat_requests = [
+        {"guest_id": f"G00{i+1}", "message": msg, "status": status,
+         "department": dept, "tags": tags,
+         "created_at": now - timedelta(hours=i), "updated_at": now - timedelta(minutes=i * 15),
+         "request_id": str(uuid.uuid4())}
+        for i, (msg, status, dept, tags) in enumerate([
+            ("Need extra towels please", StatusEnum.PENDING, "Housekeeping", ["towels", "housekeeping"]),
+            ("Room service menu please", StatusEnum.COMPLETED, "Room Service", ["food", "menu"]),
+            ("AC not working", StatusEnum.IN_PROGRESS, "Maintenance", ["ac", "repair"]),
+            ("Need late checkout", StatusEnum.ASSIGNED, "Front Desk", ["checkout", "extension"]),
+            ("WiFi not connecting", StatusEnum.PENDING, "IT", ["wifi", "internet"]),
+        ])
+    ]
+
+    work_orders = [
+        {"request_id": req["request_id"], "guest_id": req["guest_id"], "staff_id": f"S00{i+1}",
+         "description": desc, "status": status, "priority": priority, "department": dept,
+         "notes": notes, "created_at": req["created_at"], "updated_at": req["updated_at"],
+         "completed_at": req["updated_at"] if status == StatusEnum.COMPLETED else None}
+        for i, (req, desc, status, priority, dept, notes) in enumerate(zip(
+            chat_requests,
+            [
+                "Deliver extra towels to Room 301",
+                "Deliver room service menu to Room 405",
+                "Fix AC in Room 512",
+                "Process late checkout for Room 207",
+                "Resolve WiFi connection issues in Room 618"
+            ],
+            [StatusEnum.ASSIGNED, StatusEnum.COMPLETED, StatusEnum.IN_PROGRESS, StatusEnum.ASSIGNED, StatusEnum.PENDING],
+            [PriorityEnum.MEDIUM, PriorityEnum.LOW, PriorityEnum.HIGH, PriorityEnum.MEDIUM, PriorityEnum.URGENT],
+            ["Housekeeping", "Room Service", "Maintenance", "Front Desk", "IT"],
+            [
+                ["Guest requested 2 bath towels"],
+                ["Menu delivered", "Guest thanked staff"],
+                ["Technician en route", "Parts may be needed"],
+                ["Extended until 2 PM", "Additional charge applied"],
+                ["Guest is business traveler", "Needs immediate attention"]
+            ]
+        ))
+    ]
+
+    notifications = [
+        {"request_id": req["request_id"], "guest_id": req["guest_id"], "message": msg,
+         "type": type_, "read": read, "action_url": f"/requests/{req['request_id']}",
+         "metadata": meta, "created_at": req["created_at"], "updated_at": req["updated_at"]}
+        for req, msg, type_, read, meta in zip(
+            chat_requests,
+            [
+                "Your towel request has been received",
+                "Room service menu has been delivered",
+                "Technician is on the way to fix your AC",
+                "Late checkout approved until 2 PM",
+                "IT support has been notified of your WiFi issue"
+            ],
+            [NotificationTypeEnum.CHAT, NotificationTypeEnum.WORK_ORDER, NotificationTypeEnum.SYSTEM, NotificationTypeEnum.ALERT, NotificationTypeEnum.SYSTEM],
+            [False, True, False, False, False],
+            [
+                {"department": "Housekeeping"},
+                {"department": "Room Service", "completed": True},
+                {"department": "Maintenance", "eta": "15 minutes"},
+                {"department": "Front Desk", "checkout_time": "14:00"},
+                {"department": "IT", "priority": "urgent"}
+            ]
+        )
+    ]
+
+    try:
+        await insert_documents_bulk(Database.collections["chat_requests"], chat_requests, "chat_requests")
+        await insert_documents_bulk(Database.collections["work_orders"], work_orders, "work_orders")
+        await insert_documents_bulk(Database.collections["notifications"], notifications, "notifications")
+        print(f"{Fore.GREEN}{Style.BRIGHT}Database seeded successfully!")
+    except Exception as e:
+        print(f"{Fore.RED}Error seeding database: {e}")
     finally:
-        await Database.close_db()
+        await Database.close()
 
 if __name__ == "__main__":
     asyncio.run(seed_database())
