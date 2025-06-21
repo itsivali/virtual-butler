@@ -1,22 +1,17 @@
 import os
-import logging
-import structlog
-from motor.motor_asyncio import AsyncIOMotorClient
-from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
-from dotenv import load_dotenv
-from pymongo import MonitorListener, monitoring
-from pymongo.errors import (
-    ServerSelectionTimeoutError, 
-    OperationFailure, 
-    ConnectionFailure,
-    WriteError,
-    PyMongoError
-)
 import asyncio
+from typing import Optional, Dict, Any
+from datetime import datetime
 from contextlib import asynccontextmanager
 
-# Configure structured logging
+from dotenv import load_dotenv
+from pymongo import monitoring
+from pymongo.errors import (ServerSelectionTimeoutError, OperationFailure,
+                            ConnectionFailure, WriteError, PyMongoError)
+from motor.motor_asyncio import AsyncIOMotorClient
+import structlog
+
+# --- Structured Logging Setup ---
 structlog.configure(
     processors=[
         structlog.processors.TimeStamper(fmt="iso"),
@@ -30,50 +25,47 @@ structlog.configure(
     logger_factory=structlog.PrintLoggerFactory(),
     cache_logger_on_first_use=True
 )
-
 logger = structlog.get_logger()
 
-class DatabaseError(Exception):
-    """Base class for database errors"""
-    pass
+# --- Custom Exceptions ---
+class DatabaseError(Exception): pass
+class ConnectionError(DatabaseError): pass
+class OperationError(DatabaseError): pass
 
-class ConnectionError(DatabaseError):
-    """Error establishing database connection"""
-    pass
-
-class OperationError(DatabaseError):
-    """Error performing database operation"""
-    pass
-
-class MongoDBListener(MonitorListener):
-    """MongoDB command monitoring listener"""
+# --- MongoDB Command Listener ---
+class MongoDBListener(monitoring.CommandListener):
     def started(self, event):
-        logger.info("command_started", 
-                   command=event.command_name,
-                   database=event.database_name,
-                   request_id=event.request_id)
+        logger.info("command_started", command=event.command_name,
+                    database=event.database_name, request_id=event.request_id)
 
     def succeeded(self, event):
-        logger.info("command_succeeded",
-                   command=event.command_name,
-                   duration_ms=event.duration_microseconds // 1000,
-                   request_id=event.request_id)
+        logger.info("command_succeeded", command=event.command_name,
+                    duration_ms=getattr(event, "duration_micros", 0) // 1000,
+                    request_id=event.request_id)
 
     def failed(self, event):
-        logger.error("command_failed",
-                    command=event.command_name,
-                    duration_ms=event.duration_microseconds // 1000,
-                    request_id=event.request_id,
-                    failure=event.failure)
+        logger.error("command_failed", command=event.command_name,
+                     duration_ms=getattr(event, "duration_micros", 0) // 1000,
+                     request_id=event.request_id, failure=event.failure)
 
+# --- Database Connection Class ---
 class DatabaseConnection:
-    # ...existing instance variables...
+    # MongoDB settings
+    client: Optional[AsyncIOMotorClient] = None
+    db: Optional[Any] = None
+    collections = {
+        "chat_requests": None,
+        "work_orders": None,
+        "notifications": None,
+        "message_threads": None,
+        "guest_profiles": None
+    }
 
     # Connection pool settings
     MIN_POOL_SIZE = 10
     MAX_POOL_SIZE = 50
     MAX_IDLE_TIME_MS = 50000
-    
+
     # Health check settings
     HEALTH_CHECK_INTERVAL = 30  # seconds
     _health_check_task: Optional[asyncio.Task] = None
@@ -82,14 +74,14 @@ class DatabaseConnection:
 
     @classmethod
     async def connect(cls) -> None:
-        """Initialize database connection with enhanced monitoring."""
-        try:
-            load_dotenv()
-            mongodb_url = os.getenv("MONGODB_URL")
-            if not mongodb_url:
-                raise ConnectionError("MONGODB_URL environment variable is not set")
+        load_dotenv()
+        mongodb_url = os.getenv("MONGODB_URL")
+        db_name = os.getenv("MONGODB_DBNAME", "virtualbutler")
 
-            # Enhanced client configuration
+        if not mongodb_url:
+            raise ConnectionError("MONGODB_URL environment variable is not set")
+
+        try:
             cls.client = AsyncIOMotorClient(
                 mongodb_url,
                 serverSelectionTimeoutMS=5000,
@@ -100,140 +92,113 @@ class DatabaseConnection:
                 retryWrites=True,
                 event_listeners=[MongoDBListener()]
             )
-
+            cls.db = cls.client[db_name]
             await cls._verify_connection()
             await cls._initialize_collections()
             await cls._start_health_monitoring()
-
-            logger.info("database_connected",
-                       pool_size=cls.MAX_POOL_SIZE,
-                       min_pool_size=cls.MIN_POOL_SIZE)
-
+            logger.info("database_connected")
         except ConnectionFailure as e:
-            error_ctx = {"error": str(e), "error_type": "connection_failure"}
-            logger.error("database_connection_failed", **error_ctx)
-            raise ConnectionError(f"Failed to connect to MongoDB: {str(e)}") from e
+            logger.error("connection_failure", error=str(e))
+            raise ConnectionError(f"MongoDB connection failed: {e}")
         except Exception as e:
-            error_ctx = {"error": str(e), "error_type": "unexpected"}
-            logger.error("database_connection_failed", **error_ctx)
+            logger.error("unexpected_connection_failure", error=str(e))
             raise
 
     @classmethod
     async def _verify_connection(cls) -> None:
-        """Verify database connection with timeout."""
+        if not cls.client:
+            raise ConnectionError("Database client is not initialized")
         try:
-            await asyncio.wait_for(
-                cls.client.admin.command('ping'),
-                timeout=5.0
-            )
+            await asyncio.wait_for(cls.client.admin.command('ping'), timeout=5.0)
         except asyncio.TimeoutError:
             raise ConnectionError("Database ping timed out")
 
     @classmethod
+    async def _initialize_collections(cls) -> None:
+        if cls.db is None:
+            raise ConnectionError("Database is not initialized")
+        for name in cls.collections:
+            cls.collections[name] = cls.db.get_collection(name)
+
+    @classmethod
     @asynccontextmanager
     async def get_connection(cls):
-        """Get a database connection from the pool."""
         if not cls.client:
             await cls.connect()
         try:
             yield cls.client
         except PyMongoError as e:
-            logger.error("database_operation_failed",
-                        error=str(e),
-                        error_type=type(e).__name__)
-            raise OperationError(f"Database operation failed: {str(e)}") from e
+            logger.error("operation_failed", error=str(e))
+            raise OperationError(f"Operation failed: {e}") from e
 
     @classmethod
-    async def _start_health_monitoring(cls) -> None:
-        """Start periodic health monitoring."""
-        if cls._health_check_task is None:
+    async def _start_health_monitoring(cls):
+        if not cls._health_check_task:
             cls._health_check_task = asyncio.create_task(cls._health_monitor())
-            logger.info("health_monitoring_started",
-                       interval_seconds=cls.HEALTH_CHECK_INTERVAL)
+            logger.info("health_monitoring_started")
 
     @classmethod
-    async def _health_monitor(cls) -> None:
-        """Periodic health monitoring task."""
+    async def _health_monitor(cls):
         while True:
             try:
                 cls._health_status = await cls.health_check()
                 cls._last_health_check = datetime.utcnow()
-                
-                if cls._health_status["status"] != "healthy":
-                    logger.warning("unhealthy_database",
-                                 status=cls._health_status)
-                
-                # Monitor connection pool
-                pool_stats = await cls._get_pool_stats()
-                logger.info("connection_pool_stats", **pool_stats)
-                
                 await asyncio.sleep(cls.HEALTH_CHECK_INTERVAL)
-            
             except Exception as e:
-                logger.error("health_check_failed",
-                           error=str(e),
-                           error_type=type(e).__name__)
-                await asyncio.sleep(5)  # Shorter interval on failure
-
-    @classmethod
-    async def _get_pool_stats(cls) -> Dict[str, Any]:
-        """Get connection pool statistics."""
-        if not cls.client:
-            return {"status": "no_connection"}
-        
-        return {
-            "active_connections": len(cls.client.delegate._topology._servers),
-            "min_pool_size": cls.MIN_POOL_SIZE,
-            "max_pool_size": cls.MAX_POOL_SIZE,
-            "pools": [
-                {
-                    "address": str(server.description.address),
-                    "pool_size": server.pool.size,
-                    "active": server.pool.active_sockets,
-                }
-                for server in cls.client.delegate._topology._servers.values()
-            ]
-        }
+                logger.error("health_check_failed", error=str(e))
+                await asyncio.sleep(5)
 
     @classmethod
     async def health_check(cls) -> Dict[str, Any]:
-        """Enhanced health check with detailed metrics."""
         try:
-            start_time = datetime.utcnow()
-            is_alive = await cls.ping()
-            response_time = (datetime.utcnow() - start_time).total_seconds() * 1000
-
-            stats = await cls.get_collection_stats() if is_alive else {}
-            pool_stats = await cls._get_pool_stats() if is_alive else {}
-
-            health_data = {
-                "status": "healthy" if is_alive else "unhealthy",
+            start = datetime.utcnow()
+            alive = await cls.ping()
+            duration = (datetime.utcnow() - start).total_seconds() * 1000
+            return {
+                "status": "healthy" if alive else "unhealthy",
                 "timestamp": datetime.utcnow(),
-                "response_time_ms": response_time,
-                "collections": stats,
-                "connection_pool": pool_stats,
+                "response_time_ms": duration,
+                "collections": await cls._collection_stats() if alive else {},
                 "last_error": None
             }
-
-            logger.info("health_check_completed",
-                       status=health_data["status"],
-                       response_time_ms=response_time)
-
-            return health_data
-
         except Exception as e:
-            error_data = {
+            return {
                 "status": "unhealthy",
                 "error": str(e),
-                "error_type": type(e).__name__,
                 "timestamp": datetime.utcnow()
             }
-            logger.error("health_check_failed", **error_data)
-            return error_data
+
+    @classmethod
+    async def _collection_stats(cls) -> Dict[str, Any]:
+        stats = {}
+        if cls.db is None:
+            logger.error("collection_stats_failed", error="Database is not initialized")
+            return stats
+        try:
+            names = await cls.db.list_collection_names()
+            for name in names:
+                try:
+                    stats[name] = await cls.db.command("collstats", name)
+                except Exception as e:
+                    stats[name] = {"error": str(e)}
+        except Exception as e:
+            logger.error("collection_stats_failed", error=str(e))
+        return stats
+
+    @classmethod
+    async def ping(cls) -> bool:
+        try:
+            if not cls.client:
+                logger.error("ping_failed", error="Database client is not initialized")
+                return False
+            await cls.client.admin.command('ping')
+            return True
+        except Exception as e:
+            logger.error("ping_failed", error=str(e))
+            return False
 
     @classmethod
     async def close(cls) -> None:
-        """Enhanced connection cleanup."""
         try:
             if cls._health_check_task:
                 cls._health_check_task.cancel()
@@ -241,27 +206,19 @@ class DatabaseConnection:
                     await cls._health_check_task
                 except asyncio.CancelledError:
                     pass
-
             if cls.client:
                 cls.client.close()
                 cls.client = None
-                cls._reset_state()
-                logger.info("database_connection_closed")
+                cls._reset()
+                logger.info("connection_closed")
         except Exception as e:
-            logger.error("database_close_failed",
-                        error=str(e),
-                        error_type=type(e).__name__)
+            logger.error("close_failed", error=str(e))
             raise
 
     @classmethod
-    def _reset_state(cls) -> None:
-        """Reset all class state variables."""
+    def _reset(cls):
         cls.db = None
-        cls.chat_requests = None
-        cls.work_orders = None
-        cls.notifications = None
-        cls.message_threads = None
-        cls.guest_profiles = None
+        cls.collections = {k: None for k in cls.collections}
         cls._health_check_task = None
         cls._last_health_check = None
         cls._health_status = {}
