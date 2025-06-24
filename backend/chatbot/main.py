@@ -34,7 +34,7 @@ security = HTTPBearer()
 JWT_SECRET = os.getenv("JWT_SECRET", "supersecret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 
-# --- Security & Rate Limiting ---
+
 
 def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
@@ -47,8 +47,8 @@ def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
             detail="Invalid or expired token",
         )
 
-# Simple in-memory rate limiter (replace with Redis for production)
-RATE_LIMIT = 10  # messages per minute per guest
+
+RATE_LIMIT = 10 
 rate_limit_cache: Dict[str, List[datetime]] = {}
 
 def rate_limit(guest_id: str):
@@ -59,10 +59,10 @@ def rate_limit(guest_id: str):
     window.append(now)
     rate_limit_cache[guest_id] = window
 
-# --- NLP & Routing (Azure LUIS or fallback) ---
+
 
 def classify_intent(message: str) -> Optional[DepartmentEnum]:
-    # TODO: Integrate Azure LUIS here
+    # TODO: Integrate Azure LUIS
     # Fallback: keyword matching
     text = message.lower()
     if re.search(r"towel|clean|linen|sheet|pillow|blanket", text):
@@ -81,7 +81,6 @@ def classify_intent(message: str) -> Optional[DepartmentEnum]:
         return DepartmentEnum.CONCIERGE
     return None
 
-# --- Models for Multi-Modal Input ---
 
 class ChatMessage(BaseModel):
     text: Optional[str] = None
@@ -155,7 +154,7 @@ async def create_chat_request(
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
             metadata={"session_id": session_id, "images": message.images or []},
-            sentiment=None  # or provide a default sentiment value if required
+            sentiment=None 
         )
 
         # Persist chat history for session continuity
@@ -205,7 +204,7 @@ async def publish_to_service_bus(message: dict):
 @app.get("/api/v1/chat/notifications", tags=["Chat"])
 async def get_notifications(user=Depends(verify_jwt)):
     guest_id = user["sub"]
-    # TODO: Subscribe to Notification Service (websocket, webhook, etc.)
+    # TODO: Subscribe to Notification Service (webhook)
     return {"notifications": []}
 
 # --- Error Handling & Health Checks ---
