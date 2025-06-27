@@ -40,3 +40,7 @@ loguru>=0.7.0
 
 # Optional - Development Only
 pre-commit>=3.0.0
+
+# azure LUIS
+azure-ai-textanalytics
+azure-servicebus
