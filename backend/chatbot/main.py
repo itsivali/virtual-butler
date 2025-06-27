@@ -142,8 +142,44 @@ async def classify_intent_azure_luis(message: str) -> Optional[DepartmentEnum]:
     client = TextAnalyticsClient(endpoint=AZURE_LUIS_ENDPOINT, credential=AzureKeyCredential(AZURE_LUIS_KEY))
     try:
         response = await client.analyze_sentiment([message])
-        # You would use LUIS prediction endpoint for intent, this is a placeholder for demo
-        # Replace with actual LUIS intent extraction logic
+        # Use LUIS prediction endpoint for intent extraction
+        # See: https://learn.microsoft.com/en-us/azure/cognitive-services/language-service/language-understanding/quickstart?tabs=python
+        # This uses the TextAnalyticsClient as a placeholder, but for LUIS, you typically use a REST call.
+        # We'll use httpx to call the LUIS prediction endpoint.
+
+        luis_app_id = os.getenv("AZURE_LUIS_APP_ID")
+        luis_slot = os.getenv("AZURE_LUIS_SLOT", "production")
+        if not luis_app_id:
+            logger.error("luis_app_id_missing", error="AZURE_LUIS_APP_ID environment variable is not set")
+            return classify_intent(message)
+        luis_url = f"{AZURE_LUIS_ENDPOINT}/luis/prediction/v3.0/apps/{luis_app_id}/slots/{luis_slot}/predict"
+        params = {
+            "subscription-key": AZURE_LUIS_KEY,
+            "query": message,
+            "verbose": True,
+            "show-all-intents": True,
+            "log": False
+        }
+        async with httpx.AsyncClient() as client:
+            luis_response = await client.get(luis_url, params=params)
+            if luis_response.status_code != 200:
+                logger.error("luis_api_failed", status=luis_response.status_code, body=luis_response.text)
+                return classify_intent(message)
+            luis_data = luis_response.json()
+            top_intent = luis_data.get("prediction", {}).get("topIntent", "").lower()
+            # Map LUIS intents to DepartmentEnum
+            intent_map = {
+                "housekeeping": DepartmentEnum.HOUSEKEEPING,
+                "maintenance": DepartmentEnum.MAINTENANCE,
+                "roomservice": DepartmentEnum.ROOM_SERVICE,
+                "it": DepartmentEnum.IT,
+                "frontdesk": DepartmentEnum.FRONT_DESK,
+                "security": DepartmentEnum.SECURITY,
+                "concierge": DepartmentEnum.CONCIERGE,
+            }
+            for key, value in intent_map.items():
+                if key in top_intent:
+                    return value
         sentiment = response[0].sentiment
         if "food" in message.lower():
             return DepartmentEnum.ROOM_SERVICE
