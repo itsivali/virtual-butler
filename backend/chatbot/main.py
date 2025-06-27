@@ -15,6 +15,11 @@ from shared.db.database import DatabaseConnection
 from shared.db.models import ChatRequest, StatusEnum, DepartmentEnum, GuestProfile
 import uuid
 from passlib.context import CryptContext
+from azure.ai.textanalytics.aio import TextAnalyticsClient
+from azure.core.credentials import AzureKeyCredential
+from azure.servicebus.aio import ServiceBusClient, ServiceBusSender
+from azure.servicebus import ServiceBusMessage
+import importlib
 
 logger = structlog.get_logger()
 app = FastAPI(
@@ -147,7 +152,6 @@ async def create_chat_request(
     guest_id = user["sub"]
     rate_limit(guest_id)
     try:
-        # Fetch guest profile for room number and name
         async with DatabaseConnection.get_connection() as conn:
             if conn is None or not hasattr(conn, "virtualbutler"):
                 logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
@@ -156,10 +160,6 @@ async def create_chat_request(
             guest_profile = GuestProfile(**guest_doc) if guest_doc else None
 
         session_id = request.headers.get("X-Session-Id", str(uuid.uuid4()))
-        context = ChatSessionContext(
-            guest_id=guest_id,
-            session_id=session_id
-        )
         msg_text = message.text or message.voice_transcript or ""
         if not msg_text.strip():
             raise HTTPException(status_code=400, detail="Message text required.")
@@ -377,4 +377,146 @@ async def get_order_status(request_id: str, user=Depends(verify_jwt)):
             return {"request_id": request_id, "status": doc.get("status"), "updated_at": doc.get("updated_at")}
     except Exception as e:
         logger.error("get_order_status_failed", error=str(e))
-        raise HTTPException(status_code=500, detail=
+        raise HTTPException(status_code=500, detail="Failed to fetch order status")
+
+# --- Azure LUIS & Service Bus Configuration ---
+AZURE_LUIS_ENDPOINT = os.getenv("AZURE_LUIS_ENDPOINT")
+AZURE_LUIS_KEY = os.getenv("AZURE_LUIS_KEY")
+AZURE_SERVICE_BUS_CONN_STR = os.getenv("AZURE_SERVICE_BUS_CONN_STR")
+AZURE_SERVICE_BUS_QUEUE = os.getenv("AZURE_SERVICE_BUS_QUEUE", "chat-requests")
+NOTIFICATION_SERVICE_WEBHOOK = os.getenv("NOTIFICATION_SERVICE_WEBHOOK", "http://localhost:8003/api/v1/notifications")
+
+# --- Azure LUIS Intent Classification ---
+async def classify_intent_azure_luis(message: str) -> Optional[DepartmentEnum]:
+    if not AZURE_LUIS_ENDPOINT or not AZURE_LUIS_KEY:
+        return classify_intent(message)  # fallback to keyword
+    client = TextAnalyticsClient(endpoint=AZURE_LUIS_ENDPOINT, credential=AzureKeyCredential(AZURE_LUIS_KEY))
+    try:
+        response = await client.analyze_sentiment([message])
+        # You would use LUIS prediction endpoint for intent, this is a placeholder for demo
+        # Replace with actual LUIS intent extraction logic
+        sentiment = response[0].sentiment
+        if "food" in message.lower():
+            return DepartmentEnum.ROOM_SERVICE
+        # ...map LUIS intents to DepartmentEnum...
+        return classify_intent(message)
+    except Exception as e:
+        logger.error("luis_intent_failed", error=str(e))
+        return classify_intent(message)
+
+# --- Azure Service Bus Integration ---
+async def publish_to_service_bus(message: dict):
+    if not AZURE_SERVICE_BUS_CONN_STR or not AZURE_SERVICE_BUS_QUEUE:
+        logger.warning("service_bus_not_configured")
+        return
+    try:
+        async with ServiceBusClient.from_connection_string(AZURE_SERVICE_BUS_CONN_STR) as sb_client:
+            sender: ServiceBusSender = sb_client.get_queue_sender(queue_name=AZURE_SERVICE_BUS_QUEUE)
+            async with sender:
+                sb_message = ServiceBusMessage(str(message))
+                await sender.send_messages(sb_message)
+        logger.info("published_to_service_bus", message=message)
+        # Notify notification service webhook
+        await notify_webhook(message)
+    except Exception as e:
+        logger.error("service_bus_publish_failed", error=str(e))
+
+# --- Notification Service Webhook Integration ---
+import httpx
+async def notify_webhook(message: dict):
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(NOTIFICATION_SERVICE_WEBHOOK, json=message)
+        logger.info("notified_webhook", webhook=NOTIFICATION_SERVICE_WEBHOOK)
+    except Exception as e:
+        logger.error("webhook_notify_failed", error=str(e))
+
+async def audit_log(event: str, data: dict):
+    anonymized_data = {k: ("***" if "pin" in k or "token" in k else v) for k, v in data.items()}
+    logger.info("audit_log", event=event, data=anonymized_data)
+    try:
+        async with DatabaseConnection.get_connection() as conn:
+            if conn is not None and hasattr(conn, "virtualbutler"):
+                await conn.virtualbutler.audit_logs.insert_one({
+                    "event": event,
+                    "data": anonymized_data,
+                    "timestamp": datetime.utcnow()
+                })
+    except Exception as e:
+        logger.error("audit_log_failed", error=str(e))
+
+# --- Dynamic Plugin Loader ---
+@app.post("/api/v1/chat/plugin/{plugin_name}", tags=["Plugins"])
+async def plugin_handler(plugin_name: str, payload: Dict[str, Any], user=Depends(verify_jwt)):
+    logger.info("plugin_invoked", plugin=plugin_name, guest_id=user["sub"])
+    try:
+        module = importlib.import_module(f"backend.chatbot.plugins.{plugin_name}")
+        if hasattr(module, "run_plugin"):
+            result = await module.run_plugin(payload, user)
+            return {"result": result}
+        else:
+            raise ImportError(f"Plugin '{plugin_name}' does not have a 'run_plugin' function")
+    except Exception as e:
+        logger.error("plugin_execution_failed", plugin=plugin_name, error=str(e))
+        raise HTTPException(status_code=500, detail=f"Plugin execution failed: {str(e)}")
+
+
+@app.post("/api/v1/chat", response_model=ChatRequest, status_code=201, tags=["Chat"])
+async def create_chat_request(
+    message: ChatMessage,
+    request: Request,
+    user=Depends(verify_jwt)
+):
+    guest_id = user["sub"]
+    rate_limit(guest_id)
+    try:
+        async with DatabaseConnection.get_connection() as conn:
+            if conn is None or not hasattr(conn, "virtualbutler"):
+                logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
+                raise HTTPException(status_code=500, detail="Database connection error")
+            guest_doc = await conn.virtualbutler.guest_profiles.find_one({"guest_id": guest_id})
+            guest_profile = GuestProfile(**guest_doc) if guest_doc else None
+
+        session_id = request.headers.get("X-Session-Id", str(uuid.uuid4()))
+        msg_text = message.text or message.voice_transcript or ""
+        if not msg_text.strip():
+            raise HTTPException(status_code=400, detail="Message text required.")
+
+        # Use Azure LUIS for intent classification
+        department = await classify_intent_azure_luis(msg_text)
+        if not department:
+            department = DepartmentEnum.FRONT_DESK
+
+        chat_request = ChatRequest(
+            request_id=f"req_{datetime.now(timezone.utc).timestamp()}",
+            guest_id=guest_id,
+            guest_profile=guest_profile,
+            message=msg_text,
+            voice_transcript=message.voice_transcript,
+            department=department,
+            status=StatusEnum.PENDING,
+            tags=[message.quick_reply] if message.quick_reply else [],
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            metadata={
+                "session_id": session_id,
+                "images": message.images or [],
+                "room_number": guest_profile.room_number if guest_profile else None,
+                "guest_name": guest_profile.name if guest_profile else None
+            },
+            sentiment=None
+        )
+
+        async with DatabaseConnection.get_connection() as conn:
+            if conn is None or not hasattr(conn, "virtualbutler"):
+                logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
+                raise HTTPException(status_code=500, detail="Database connection error")
+            await conn.virtualbutler.chat_requests.insert_one(chat_request.dict(by_alias=True))
+            await publish_to_service_bus(chat_request.dict())
+            await audit_log("chat_created", chat_request.dict())
+            logger.info("chat_created", request_id=chat_request.request_id, guest_id=guest_id)
+            return chat_request
+    except Exception as e:
+        logger.error("chat_creation_failed", error=str(e))
+        await audit_log("chat_creation_failed", {"error": str(e), "guest_id": guest_id})
+        raise HTTPException(status_code=500, detail="Failed to create chat request")
