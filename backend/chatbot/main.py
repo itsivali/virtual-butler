@@ -53,6 +53,12 @@ NOTIFICATION_SERVICE_WEBHOOK = os.getenv("NOTIFICATION_SERVICE_WEBHOOK")
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    if JWT_SECRET is None:
+        logger.error("jwt_secret_missing", error="JWT_SECRET environment variable is not set")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="JWT secret is not configured"
+        )
     try:
         payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         return payload
@@ -280,54 +286,24 @@ async def plugin_handler(plugin_name: str, payload: Dict[str, Any], user=Depends
         raise HTTPException(status_code=500, detail=f"Plugin execution failed: {str(e)}")
 
 from fastapi.responses import JSONResponse
+import json
 
-# Example static translations for demonstration
-TRANSLATIONS = {
-    "en": {
-        "greeting": "Hello! How can I help you today?",
-        "order_placed": "Your order has been placed.",
-        "order_failed": "Failed to place your order.",
-        "chat_created": "Your message has been received.",
-        "rate_limit_exceeded": "Rate limit exceeded. Please wait.",
-        "invalid_token": "Invalid or expired token.",
-        "db_error": "Database connection error.",
-        "not_found": "Resource not found.",
-        "unexpected_error": "An unexpected error occurred. Please try again later."
-    },
-    "fr": {
-        "greeting": "Bonjour ! Comment puis-je vous aider aujourd'hui ?",
-        "order_placed": "Votre commande a été passée.",
-        "order_failed": "Échec de la commande.",
-        "chat_created": "Votre message a été reçu.",
-        "rate_limit_exceeded": "Limite de requêtes dépassée. Veuillez patienter.",
-        "invalid_token": "Jeton invalide ou expiré.",
-        "db_error": "Erreur de connexion à la base de données.",
-        "not_found": "Ressource non trouvée.",
-        "unexpected_error": "Une erreur inattendue s'est produite. Veuillez réessayer plus tard."
-    },
-    "es": {
-        "greeting": "¡Hola! ¿Cómo puedo ayudarte hoy?",
-        "order_placed": "Tu pedido ha sido realizado.",
-        "order_failed": "No se pudo realizar tu pedido.",
-        "chat_created": "Tu mensaje ha sido recibido.",
-        "rate_limit_exceeded": "Límite de solicitudes excedido. Por favor espera.",
-        "invalid_token": "Token inválido o expirado.",
-        "db_error": "Error de conexión a la base de datos.",
-        "not_found": "Recurso no encontrado.",
-        "unexpected_error": "Ocurrió un error inesperado. Por favor, inténtalo de nuevo más tarde."
-    },
-    "zh": {
-        "greeting": "你好！我能为您做些什么？",
-        "order_placed": "您的订单已下达。",
-        "order_failed": "下单失败。",
-        "chat_created": "您的消息已收到。",
-        "rate_limit_exceeded": "请求过于频繁，请稍后再试。",
-        "invalid_token": "令牌无效或已过期。",
-        "db_error": "数据库连接错误。",
-        "not_found": "未找到资源。",
-        "unexpected_error": "发生了意外错误，请稍后再试。"
-    }
-}
+def load_translations():
+    translations = {}
+    i18n_dir = os.path.join(os.path.dirname(__file__), "i18n")
+    allowed_langs = {"en", "fr", "es", "zh"}
+    for lang_code in allowed_langs:
+        # Only allow known language codes to prevent path traversal
+        path = os.path.join(i18n_dir, f"{lang_code}.json")
+        try:
+            with open(path, encoding="utf-8") as f:
+                translations[lang_code] = json.load(f)
+        except Exception as e:
+            logger.error("translation_load_failed", lang=lang_code, error=str(e))
+            translations[lang_code] = {}
+    return translations
+
+TRANSLATIONS = load_translations()
 
 @app.get("/api/v1/chat/i18n/{lang}", tags=["i18n"])
 async def get_translations(lang: str):
@@ -335,13 +311,14 @@ async def get_translations(lang: str):
     Returns translation dictionary for supported languages.
     Supported: en (English), fr (French), es (Spanish), zh (Mandarin Chinese)
     """
+    allowed_langs = {"en", "fr", "es", "zh"}
     lang = lang.lower()
-    if lang not in TRANSLATIONS:
+    if lang not in allowed_langs or not TRANSLATIONS.get(lang):
         return JSONResponse(
             status_code=404,
             content={
-                "detail": f"Language '{lang}' not supported.",
-                "supported_languages": list(TRANSLATIONS.keys())
+                "detail": f"Language '{lang}' not supported or translation file missing.",
+                "supported_languages": [k for k, v in TRANSLATIONS.items() if v]
             }
         )
     return {"lang": lang, "translations": TRANSLATIONS[lang]}
@@ -514,4 +491,4 @@ async def create_chat_request(
     except Exception as e:
         logger.error("chat_creation_failed", error=str(e))
         await audit_log("chat_creation_failed", {"error": str(e), "guest_id": guest_id, "message": message.dict()})
-        raise HTTPException(status_code=500, detail="Failed to create chat request")        
+        raise HTTPException(status_code=500, detail="Failed to create chat request")
