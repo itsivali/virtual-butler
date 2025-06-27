@@ -1,0 +1,11 @@
+{
+    "greeting": "你好！我能为您做些什么？",
+    "order_placed": "您的订单已下达。",
+    "order_failed": "下单失败。",
+    "chat_created": "您的消息已收到。",
+    "rate_limit_exceeded": "请求过于频繁，请稍后再试。",
+    "invalid_token": "令牌无效或已过期。",
+    "db_error": "数据库连接错误。",
+    "not_found": "未找到资源。",
+    "unexpected_error": "发生了意外错误，请稍后再试。"
+}

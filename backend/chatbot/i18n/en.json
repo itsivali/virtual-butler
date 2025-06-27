@@ -1,0 +1,11 @@
+{
+    "greeting": "Hello! How can I help you today?",
+    "order_placed": "Your order has been placed.",
+    "order_failed": "Failed to place your order.",
+    "chat_created": "Your message has been received.",
+    "rate_limit_exceeded": "Rate limit exceeded. Please wait.",
+    "invalid_token": "Invalid or expired token.",
+    "db_error": "Database connection error.",
+    "not_found": "Resource not found.",
+    "unexpected_error": "An unexpected error occurred. Please try again later."
+}

@@ -1,0 +1,11 @@
+{
+    "greeting": "¡Hola! ¿Cómo puedo ayudarte hoy?",
+    "order_placed": "Tu pedido ha sido realizado.",
+    "order_failed": "No se pudo realizar tu pedido.",
+    "chat_created": "Tu mensaje ha sido recibido.",
+    "rate_limit_exceeded": "Límite de solicitudes excedido. Por favor espera.",
+    "invalid_token": "Token inválido o expirado.",
+    "db_error": "Error de conexión a la base de datos.",
+    "not_found": "Recurso no encontrado.",
+    "unexpected_error": "Ocurrió un error inesperado. Por favor, inténtalo de nuevo más tarde."
+}

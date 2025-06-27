@@ -1,0 +1,11 @@
+{
+    "greeting": "Bonjour ! Comment puis-je vous aider aujourd'hui ?",
+    "order_placed": "Votre commande a été passée.",
+    "order_failed": "Échec de la commande.",
+    "chat_created": "Votre message a été reçu.",
+    "rate_limit_exceeded": "Limite de requêtes dépassée. Veuillez patienter.",
+    "invalid_token": "Jeton invalide ou expiré.",
+    "db_error": "Erreur de connexion à la base de données.",
+    "not_found": "Ressource non trouvée.",
+    "unexpected_error": "Une erreur inattendue s'est produite. Veuillez réessayer plus tard."
+}
