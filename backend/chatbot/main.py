@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, status, Request, Body
+from fastapi import FastAPI, HTTPException, Depends, status, Request, Body, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field, EmailStr
@@ -85,7 +85,7 @@ def classify_intent(message: str) -> Optional[DepartmentEnum]:
 class ChatMessage(BaseModel):
     text: Optional[str] = None
     voice_transcript: Optional[str] = None
-    images: Optional[List[str]] = None  # URLs or base64
+    images: Optional[List[str]] = None  
     quick_reply: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
@@ -104,6 +104,19 @@ class AuthRequest(BaseModel):
 class AuthResponse(BaseModel):
     token: str
     guest_id: str
+
+class MenuItem(BaseModel):
+    item_id: str
+    name: str
+    description: Optional[str] = None
+    price: float
+    category: str
+    image_url: Optional[str] = None
+    available: bool = True
+
+class FoodOrderRequest(BaseModel):
+    items: List[Dict[str, Any]]  # e.g. [{"item_id": "burger1", "quantity": 2, "notes": "No onions"}]
+    special_instructions: Optional[str] = None
 
 # --- Authentication Endpoint ---
 
@@ -261,3 +274,119 @@ async def startup_db_client():
 @app.on_event("shutdown")
 async def shutdown_db_client():
     await DatabaseConnection.close()
+
+# --- Food/Beverage Order Endpoints ---
+
+@app.post("/api/v1/order", tags=["Room Service"])
+async def place_food_order(
+    order: FoodOrderRequest,
+    request: Request,
+    user=Depends(verify_jwt)
+):
+    guest_id = user["sub"]
+    rate_limit(guest_id)
+    try:
+        async with DatabaseConnection.get_connection() as conn:
+            if conn is None or not hasattr(conn, "virtualbutler"):
+                logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
+                raise HTTPException(status_code=500, detail="Database connection error")
+            guest_doc = await conn.virtualbutler.guest_profiles.find_one({"guest_id": guest_id})
+            guest_profile = GuestProfile(**guest_doc) if guest_doc else None
+
+        session_id = request.headers.get("X-Session-Id", str(uuid.uuid4()))
+        order_summary = ", ".join([f"{item['quantity']}x {item['item_id']}" for item in order.items])
+        msg_text = f"Room service order: {order_summary}"
+        if order.special_instructions:
+            msg_text += f" | Instructions: {order.special_instructions}"
+
+        chat_request = ChatRequest(
+            request_id=f"req_{datetime.now(timezone.utc).timestamp()}",
+            guest_id=guest_id,
+            guest_profile=guest_profile,
+            message=msg_text,
+            department=DepartmentEnum.ROOM_SERVICE,
+            status=StatusEnum.PENDING,
+            tags=["room_service", "order"],
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+            metadata={
+                "session_id": session_id,
+                "room_number": guest_profile.room_number if guest_profile else None,
+                "guest_name": guest_profile.name if guest_profile else None,
+                "order_items": order.items,
+                "special_instructions": order.special_instructions
+            },
+            sentiment=None
+        )
+
+        async with DatabaseConnection.get_connection() as conn:
+            if conn is None or not hasattr(conn, "virtualbutler"):
+                logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
+                raise HTTPException(status_code=500, detail="Database connection error")
+            await conn.virtualbutler.chat_requests.insert_one(chat_request.dict(by_alias=True))
+            asyncio.create_task(publish_to_service_bus(chat_request.dict()))
+            logger.info("food_order_created", request_id=chat_request.request_id, guest_id=guest_id)
+            return {"status": "order_placed", "request_id": chat_request.request_id}
+    except Exception as e:
+        logger.error("food_order_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to place food order")
+
+@app.get("/api/v1/order/history", tags=["Room Service"])
+async def get_order_history(user=Depends(verify_jwt)):
+    guest_id = user["sub"]
+    try:
+        orders = []
+        async with DatabaseConnection.get_connection() as conn:
+            if conn is None or not hasattr(conn, "virtualbutler"):
+                logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
+                raise HTTPException(status_code=500, detail="Database connection error")
+            cursor = conn.virtualbutler.chat_requests.find({
+                "guest_id": guest_id,
+                "department": DepartmentEnum.ROOM_SERVICE
+            })
+            async for doc in cursor:
+                orders.append(ChatRequest(**doc))
+        return orders
+    except Exception as e:
+        logger.error("get_order_history_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to fetch order history")
+
+@app.get("/api/v1/order/status/{request_id}", tags=["Room Service"])
+async def get_order_status(request_id: str, user=Depends(verify_jwt)):
+    guest_id = user["sub"]
+    try:
+        async with DatabaseConnection.get_connection() as conn:
+            if conn is None or not hasattr(conn, "virtualbutler"):
+                logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
+                raise HTTPException(status_code=500, detail="Database connection error")
+            doc = await conn.virtualbutler.chat_requests.find_one({
+                "request_id": request_id,
+                "guest_id": guest_id,
+                "department": DepartmentEnum.ROOM_SERVICE
+            })
+            if not doc:
+                raise HTTPException(status_code=404, detail="Order not found")
+            return {"request_id": request_id, "status": doc.get("status"), "updated_at": doc.get("updated_at")}
+    except Exception as e:
+        logger.error("get_order_status_failed", error=str(e))
+        raise HTTPException(status_code=500, detail="Failed to fetch order status")
+
+# --- Real-time Order Updates via WebSocket ---
+
+order_ws_connections: Dict[str, WebSocket] = {}
+
+@app.websocket("/ws/orders/{guest_id}")
+async def order_status_ws(websocket: WebSocket, guest_id: str):
+    await websocket.accept()
+    order_ws_connections[guest_id] = websocket
+    try:
+        while True:
+            await websocket.receive_text() 
+    except WebSocketDisconnect:
+        order_ws_connections.pop(guest_id, None)
+
+# Helper function to push order status updates
+async def push_order_update(guest_id: str, update: dict):
+    ws = order_ws_connections.get(guest_id)
+    if ws:
+        await ws.send_json(update)
