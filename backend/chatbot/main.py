@@ -14,6 +14,7 @@ from pymongo import ReturnDocument
 from shared.db.database import DatabaseConnection
 from shared.db.models import ChatRequest, StatusEnum, DepartmentEnum, GuestProfile
 import uuid
+from passlib.context import CryptContext
 
 logger = structlog.get_logger()
 app = FastAPI(
@@ -34,7 +35,7 @@ security = HTTPBearer()
 JWT_SECRET = os.getenv("JWT_SECRET", "supersecret")
 JWT_ALGORITHM = os.getenv("JWT_ALGORITHM", "HS256")
 
-
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
     try:
@@ -47,7 +48,6 @@ def verify_jwt(credentials: HTTPAuthorizationCredentials = Depends(security)):
             detail="Invalid or expired token",
         )
 
-
 RATE_LIMIT = 10 
 rate_limit_cache: Dict[str, List[datetime]] = {}
 
@@ -58,8 +58,6 @@ def rate_limit(guest_id: str):
         raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait.")
     window.append(now)
     rate_limit_cache[guest_id] = window
-
-
 
 def classify_intent(message: str) -> Optional[DepartmentEnum]:
     # TODO: Integrate Azure LUIS
@@ -80,7 +78,6 @@ def classify_intent(message: str) -> Optional[DepartmentEnum]:
     if re.search(r"taxi|tour|spa|reservation|booking|recommend|restaurant", text):
         return DepartmentEnum.CONCIERGE
     return None
-
 
 class ChatMessage(BaseModel):
     text: Optional[str] = None
@@ -118,15 +115,26 @@ class FoodOrderRequest(BaseModel):
     items: List[Dict[str, Any]]  # e.g. [{"item_id": "burger1", "quantity": 2, "notes": "No onions"}]
     special_instructions: Optional[str] = None
 
-# --- Authentication Endpoint ---
+# --- Authentication Endpoint with PIN and Room Lookup ---
 
 @app.post("/auth", response_model=AuthResponse, tags=["Auth"])
 async def authenticate_guest(auth: AuthRequest):
-    # TODO: Replace with secure PIN/room lookup
-    guest_id = f"guest_{auth.room_number}"
-    payload = {"sub": guest_id, "room": auth.room_number, "role": "guest"}
-    token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-    return AuthResponse(token=token, guest_id=guest_id)
+    async with DatabaseConnection.get_connection() as conn:
+        if conn is None or not hasattr(conn, "virtualbutler"):
+            logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
+            raise HTTPException(status_code=500, detail="Database connection error")
+        guest_doc = await conn.virtualbutler.guest_profiles.find_one({"room_number": auth.room_number})
+        if not guest_doc:
+            logger.warning("auth_failed", reason="Room not found", room_number=auth.room_number)
+            raise HTTPException(status_code=401, detail="Invalid room number or PIN")
+        stored_pin_hash = guest_doc.get("pin")
+        if not stored_pin_hash or not pwd_context.verify(auth.pin, stored_pin_hash):
+            logger.warning("auth_failed", reason="Invalid PIN", room_number=auth.room_number)
+            raise HTTPException(status_code=401, detail="Invalid room number or PIN")
+        guest_id = guest_doc["guest_id"]
+        payload = {"sub": guest_id, "room": auth.room_number, "role": "guest"}
+        token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+        return AuthResponse(token=token, guest_id=guest_id)
 
 # --- Chat Endpoints ---
 
@@ -369,24 +377,4 @@ async def get_order_status(request_id: str, user=Depends(verify_jwt)):
             return {"request_id": request_id, "status": doc.get("status"), "updated_at": doc.get("updated_at")}
     except Exception as e:
         logger.error("get_order_status_failed", error=str(e))
-        raise HTTPException(status_code=500, detail="Failed to fetch order status")
-
-# --- Real-time Order Updates via WebSocket ---
-
-order_ws_connections: Dict[str, WebSocket] = {}
-
-@app.websocket("/ws/orders/{guest_id}")
-async def order_status_ws(websocket: WebSocket, guest_id: str):
-    await websocket.accept()
-    order_ws_connections[guest_id] = websocket
-    try:
-        while True:
-            await websocket.receive_text() 
-    except WebSocketDisconnect:
-        order_ws_connections.pop(guest_id, None)
-
-# Helper function to push order status updates
-async def push_order_update(guest_id: str, update: dict):
-    ws = order_ws_connections.get(guest_id)
-    if ws:
-        await ws.send_json(update)
+        raise HTTPException(status_code=500, detail=
