@@ -126,26 +126,31 @@ async def create_chat_request(
     guest_id = user["sub"]
     rate_limit(guest_id)
     try:
-        # Contextual awareness: fetch or create session context
+        # Fetch guest profile for room number and name
+        async with DatabaseConnection.get_connection() as conn:
+            if conn is None or not hasattr(conn, "virtualbutler"):
+                logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
+                raise HTTPException(status_code=500, detail="Database connection error")
+            guest_doc = await conn.virtualbutler.guest_profiles.find_one({"guest_id": guest_id})
+            guest_profile = GuestProfile(**guest_doc) if guest_doc else None
+
         session_id = request.headers.get("X-Session-Id", str(uuid.uuid4()))
         context = ChatSessionContext(
             guest_id=guest_id,
             session_id=session_id
         )
-        # Multi-modal input: prefer text, fallback to voice
         msg_text = message.text or message.voice_transcript or ""
         if not msg_text.strip():
             raise HTTPException(status_code=400, detail="Message text required.")
 
-        # NLP intent classification
         department = classify_intent(msg_text)
         if not department:
-            department = DepartmentEnum.FRONT_DESK  # Fallback escalation
+            department = DepartmentEnum.FRONT_DESK
 
-        # Build chat request
         chat_request = ChatRequest(
             request_id=f"req_{datetime.now(timezone.utc).timestamp()}",
             guest_id=guest_id,
+            guest_profile=guest_profile,  # Attach profile
             message=msg_text,
             voice_transcript=message.voice_transcript,
             department=department,
@@ -153,21 +158,21 @@ async def create_chat_request(
             tags=[message.quick_reply] if message.quick_reply else [],
             created_at=datetime.now(timezone.utc),
             updated_at=datetime.now(timezone.utc),
-            metadata={"session_id": session_id, "images": message.images or []},
-            sentiment=None 
+            metadata={
+                "session_id": session_id,
+                "images": message.images or [],
+                "room_number": guest_profile.room_number if guest_profile else None,
+                "guest_name": guest_profile.name if guest_profile else None
+            },
+            sentiment=None
         )
 
-        # Persist chat history for session continuity
         async with DatabaseConnection.get_connection() as conn:
             if conn is None or not hasattr(conn, "virtualbutler"):
                 logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
                 raise HTTPException(status_code=500, detail="Database connection error")
             await conn.virtualbutler.chat_requests.insert_one(chat_request.dict(by_alias=True))
-
-            # Publish to Service Bus (mocked)
             asyncio.create_task(publish_to_service_bus(chat_request.dict()))
-
-            # Acknowledge to guest
             logger.info("chat_created", request_id=chat_request.request_id, guest_id=guest_id)
             return chat_request
     except Exception as e:
