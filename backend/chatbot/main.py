@@ -233,6 +233,7 @@ async def audit_log(event: str, data: dict):
     except Exception as e:
         logger.error("audit_log_failed", error=str(e))
 
+from fastapi import Path
 # --- Authentication Endpoint with PIN and Room Lookup ---
 @app.post("/auth", response_model=AuthResponse, tags=["Auth"])
 async def authenticate_guest(auth: AuthRequest):
@@ -256,16 +257,29 @@ async def authenticate_guest(auth: AuthRequest):
         token = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
         return AuthResponse(token=token, guest_id=guest_id)
 
+
+# --- Multi-turn Conversation Context ---
 @app.get("/api/v1/chat/history", response_model=List[ChatRequest], tags=["Chat"])
 async def get_chat_history(user=Depends(verify_jwt)):
     guest_id = user["sub"]
+    return await get_chat_history_for_guest(guest_id)
+
+# New: Admin/staff can view any guest's chat history
+@app.get("/api/v1/chat/history/{guest_id}", response_model=List[ChatRequest], tags=["Chat"])
+async def get_chat_history_for_guest_id(guest_id: str = Path(...), user=Depends(verify_jwt)):
+    # Only allow staff/admin
+    if user.get("role") not in ("staff", "admin"):
+        raise HTTPException(status_code=403, detail="Insufficient privileges")
+    return await get_chat_history_for_guest(guest_id)
+
+async def get_chat_history_for_guest(guest_id: str):
     try:
         chats = []
         async with DatabaseConnection.get_connection() as conn:
             if conn is None or not hasattr(conn, "virtualbutler"):
                 logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
                 raise HTTPException(status_code=500, detail="Database connection error")
-            cursor = conn.virtualbutler.chat_requests.find({"guest_id": guest_id})
+            cursor = conn.virtualbutler.chat_requests.find({"guest_id": guest_id}).sort("created_at", 1)
             async for doc in cursor:
                 chats.append(ChatRequest(**doc))
         return chats
@@ -469,6 +483,8 @@ async def get_order_status(request_id: str, user=Depends(verify_jwt)):
         logger.error("get_order_status_failed", error=str(e))
         raise HTTPException(status_code=500, detail="Failed to fetch order status")
 
+
+# --- Multi-turn Chat: Store and retrieve context ---
 @app.post("/api/v1/chat", response_model=ChatRequest, status_code=201, tags=["Chat"])
 async def create_chat_request(
     message: ChatMessage,
@@ -485,6 +501,9 @@ async def create_chat_request(
             guest_doc = await conn.virtualbutler.guest_profiles.find_one({"guest_id": guest_id})
             guest_profile = GuestProfile(**guest_doc) if guest_doc else None
 
+            # Retrieve last context for this guest (if any)
+            last_context = await conn.virtualbutler.chat_contexts.find_one({"guest_id": guest_id})
+
         session_id = request.headers.get("X-Session-Id", str(uuid.uuid4()))
         msg_text = message.text or message.voice_transcript or ""
         if not msg_text.strip():
@@ -494,6 +513,22 @@ async def create_chat_request(
         department = await classify_intent_azure_luis(msg_text)
         if not department:
             department = DepartmentEnum.FRONT_DESK
+
+        # Build/extend context
+        context_history = last_context["history"] if last_context and "history" in last_context else []
+        context_history.append({
+            "message": msg_text,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "department": str(department)
+        })
+        context_obj = {
+            "guest_id": guest_id,
+            "session_id": session_id,
+            "last_intent": str(department),
+            "last_department": str(department),
+            "history": context_history,
+            "updated_at": datetime.now(timezone.utc)
+        }
 
         chat_request = ChatRequest(
             request_id=f"req_{datetime.now(timezone.utc).timestamp()}",
@@ -510,7 +545,8 @@ async def create_chat_request(
                 "session_id": session_id,
                 "images": message.images or [],
                 "room_number": guest_profile.room_number if guest_profile else None,
-                "guest_name": guest_profile.name if guest_profile else None
+                "guest_name": guest_profile.name if guest_profile else None,
+                "context": context_obj
             },
             sentiment=None
         )
@@ -520,6 +556,12 @@ async def create_chat_request(
                 logger.error("db_connection_failed", error="Database connection is None or missing 'virtualbutler' attribute")
                 raise HTTPException(status_code=500, detail="Database connection error")
             await conn.virtualbutler.chat_requests.insert_one(chat_request.dict(by_alias=True))
+            # Upsert context for guest
+            await conn.virtualbutler.chat_contexts.update_one(
+                {"guest_id": guest_id},
+                {"$set": context_obj},
+                upsert=True
+            )
             await publish_to_service_bus(chat_request.dict())
             await audit_log("chat_created", chat_request.dict())
             logger.info("chat_created", request_id=chat_request.request_id, guest_id=guest_id)
