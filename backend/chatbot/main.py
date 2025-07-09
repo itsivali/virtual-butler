@@ -139,27 +139,20 @@ class FoodOrderRequest(BaseModel):
 async def classify_intent_azure_luis(message: str) -> Optional[DepartmentEnum]:
     if not AZURE_LUIS_ENDPOINT or not AZURE_LUIS_KEY:
         return classify_intent(message)  # fallback to keyword
-    client = TextAnalyticsClient(endpoint=AZURE_LUIS_ENDPOINT, credential=AzureKeyCredential(AZURE_LUIS_KEY))
+    luis_app_id = os.getenv("AZURE_LUIS_APP_ID")
+    luis_slot = os.getenv("AZURE_LUIS_SLOT", "production")
+    if not luis_app_id:
+        logger.error("luis_app_id_missing", error="AZURE_LUIS_APP_ID environment variable is not set")
+        return classify_intent(message)
+    luis_url = f"{AZURE_LUIS_ENDPOINT}/luis/prediction/v3.0/apps/{luis_app_id}/slots/{luis_slot}/predict"
+    params = {
+        "subscription-key": AZURE_LUIS_KEY,
+        "query": message,
+        "verbose": True,
+        "show-all-intents": True,
+        "log": False
+    }
     try:
-        response = await client.analyze_sentiment([message])
-        # Use LUIS prediction endpoint for intent extraction
-        # See: https://learn.microsoft.com/en-us/azure/cognitive-services/language-service/language-understanding/quickstart?tabs=python
-        # This uses the TextAnalyticsClient as a placeholder, but for LUIS, you typically use a REST call.
-        # We'll use httpx to call the LUIS prediction endpoint.
-
-        luis_app_id = os.getenv("AZURE_LUIS_APP_ID")
-        luis_slot = os.getenv("AZURE_LUIS_SLOT", "production")
-        if not luis_app_id:
-            logger.error("luis_app_id_missing", error="AZURE_LUIS_APP_ID environment variable is not set")
-            return classify_intent(message)
-        luis_url = f"{AZURE_LUIS_ENDPOINT}/luis/prediction/v3.0/apps/{luis_app_id}/slots/{luis_slot}/predict"
-        params = {
-            "subscription-key": AZURE_LUIS_KEY,
-            "query": message,
-            "verbose": True,
-            "show-all-intents": True,
-            "log": False
-        }
         async with httpx.AsyncClient() as client:
             luis_response = await client.get(luis_url, params=params)
             if luis_response.status_code != 200:
@@ -180,10 +173,7 @@ async def classify_intent_azure_luis(message: str) -> Optional[DepartmentEnum]:
             for key, value in intent_map.items():
                 if key in top_intent:
                     return value
-        sentiment = response[0].sentiment
-        if "food" in message.lower():
-            return DepartmentEnum.ROOM_SERVICE
-        # ...map LUIS intents to DepartmentEnum...
+        # fallback
         return classify_intent(message)
     except Exception as e:
         logger.error("luis_intent_failed", error=str(e))
@@ -218,7 +208,7 @@ async def notify_webhook(message: dict):
     except Exception as e:
         logger.error("webhook_notify_failed", error=str(e))
 
-# --- Audit Logging: Write anonymized logs to secure collection ---
+
 async def audit_log(event: str, data: dict):
     anonymized_data = {k: ("***" if "pin" in k or "token" in k else v) for k, v in data.items()}
     logger.info("audit_log", event=event, data=anonymized_data)
@@ -234,7 +224,7 @@ async def audit_log(event: str, data: dict):
         logger.error("audit_log_failed", error=str(e))
 
 from fastapi import Path
-# --- Authentication Endpoint with PIN and Room Lookup ---
+
 @app.post("/auth", response_model=AuthResponse, tags=["Auth"])
 async def authenticate_guest(auth: AuthRequest):
     async with DatabaseConnection.get_connection() as conn:
