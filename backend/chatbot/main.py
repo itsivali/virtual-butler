@@ -33,6 +33,29 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# --- Security Best Practices ---
+# 1. Use HTTPS in production (enforce via proxy or ASGI middleware)
+# 2. Use strong JWT secrets and rotate regularly
+# 3. Validate and sanitize all user input (Pydantic models, regex, etc.)
+# 4. Use rate limiting (already implemented)
+# 5. Use CORS with allowlist in production
+# 6. Use HTTPOnly and Secure cookies for session tokens if using cookies
+# 7. Log sensitive actions and errors securely (already implemented)
+# 8. Principle of least privilege for database/service credentials
+# 9. Do not expose stack traces or internal errors to clients
+# 10. Use environment variables for all secrets and keys
+# 11. Use dependency injection for authentication and authorization (already implemented)
+# 12. Use role-based access control for all endpoints (already implemented)
+# 13. Use up-to-date dependencies and monitor for vulnerabilities
+# 14. Use secure password hashing (bcrypt, already implemented)
+# 15. Use API gateway or firewall for additional protection in production
+# 16. Use Azure Managed Identities and Key Vault for production secrets
+# 17. Use logging and monitoring for all API access and errors
+# 18. Use input/output escaping for all user-facing data
+# 19. Use Content Security Policy (CSP) headers for frontend
+# 20. Use automated security testing in CI/CD
+#
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],     
@@ -137,8 +160,17 @@ class FoodOrderRequest(BaseModel):
 
 # --- Azure LUIS Intent Classification ---
 async def classify_intent_azure_luis(message: str) -> Optional[DepartmentEnum]:
+    """
+    Uses Azure LUIS (Language Understanding) to extract the top intent from a message.
+    Requires the following environment variables:
+      - AZURE_LUIS_ENDPOINT: e.g. https://<your-resource-name>.cognitiveservices.azure.com
+      - AZURE_LUIS_KEY: your LUIS authoring or prediction key
+      - AZURE_LUIS_APP_ID: your LUIS app ID (GUID)
+      - AZURE_LUIS_SLOT: slot name, usually 'production' (optional)
+    """
     if not AZURE_LUIS_ENDPOINT or not AZURE_LUIS_KEY:
-        return classify_intent(message)  # fallback to keyword
+        logger.warning("LUIS not configured, falling back to keyword intent.")
+        return classify_intent(message)
     luis_app_id = os.getenv("AZURE_LUIS_APP_ID")
     luis_slot = os.getenv("AZURE_LUIS_SLOT", "production")
     if not luis_app_id:
@@ -159,24 +191,118 @@ async def classify_intent_azure_luis(message: str) -> Optional[DepartmentEnum]:
                 logger.error("luis_api_failed", status=luis_response.status_code, body=luis_response.text)
                 return classify_intent(message)
             luis_data = luis_response.json()
-            top_intent = luis_data.get("prediction", {}).get("topIntent", "").lower()
+            # Example LUIS response structure:
+            # {
+            #   "query": "I need towels",
+            #   "prediction": {
+            #     "topIntent": "Housekeeping",
+            #     "intents": { ... },
+            #     ...
+            #   }
+            # }
+            prediction = luis_data.get("prediction", {})
+            top_intent = prediction.get("topIntent", "").lower()
+            logger.info("luis_prediction", top_intent=top_intent, all_intents=prediction.get("intents"))
             # Map LUIS intents to DepartmentEnum
             intent_map = {
                 "housekeeping": DepartmentEnum.HOUSEKEEPING,
                 "maintenance": DepartmentEnum.MAINTENANCE,
                 "roomservice": DepartmentEnum.ROOM_SERVICE,
+                "room_service": DepartmentEnum.ROOM_SERVICE,
                 "it": DepartmentEnum.IT,
                 "frontdesk": DepartmentEnum.FRONT_DESK,
+                "front_desk": DepartmentEnum.FRONT_DESK,
                 "security": DepartmentEnum.SECURITY,
                 "concierge": DepartmentEnum.CONCIERGE,
             }
             for key, value in intent_map.items():
-                if key in top_intent:
+                if key in top_intent.replace(" ", "").replace("_", "").lower():
                     return value
         # fallback
         return classify_intent(message)
     except Exception as e:
         logger.error("luis_intent_failed", error=str(e))
+        return classify_intent(message)
+
+# --- Conversational Language Understanding (CLU) Intent Classification ---
+async def classify_intent_clu(message: str, conversation_id: str = None, user_id: str = None) -> Optional[DepartmentEnum]:
+    """
+    Uses Azure Conversational Language Understanding (CLU) to extract the top intent from a message.
+    Requires the following environment variables:
+      - AZURE_CLU_ENDPOINT: e.g. https://<your-resource-name>.cognitiveservices.azure.com
+      - AZURE_CLU_KEY: your CLU key
+      - AZURE_CLU_PROJECT: your CLU project name
+      - AZURE_CLU_DEPLOYMENT: your CLU deployment name
+    """
+    import httpx
+    AZURE_CLU_ENDPOINT = os.getenv("AZURE_CLU_ENDPOINT")
+    AZURE_CLU_KEY = os.getenv("AZURE_CLU_KEY")
+    AZURE_CLU_PROJECT = os.getenv("AZURE_CLU_PROJECT")
+    AZURE_CLU_DEPLOYMENT = os.getenv("AZURE_CLU_DEPLOYMENT")
+    if not (AZURE_CLU_ENDPOINT and AZURE_CLU_KEY and AZURE_CLU_PROJECT and AZURE_CLU_DEPLOYMENT):
+        logger.warning("CLU not configured, falling back to keyword intent.")
+        return classify_intent(message)
+    url = f"{AZURE_CLU_ENDPOINT}/language/:analyze-conversations?api-version=2023-04-01"
+    headers = {
+        "Ocp-Apim-Subscription-Key": AZURE_CLU_KEY,
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "kind": "Conversation",
+        "analysisInput": {
+            "conversationItem": {
+                "id": conversation_id or str(uuid.uuid4()),
+                "participantId": user_id or "user",
+                "modality": "text",
+                "language": "en",
+                "text": message
+            }
+        },
+        "parameters": {
+            "projectName": AZURE_CLU_PROJECT,
+            "deploymentName": AZURE_CLU_DEPLOYMENT,
+            "verbose": True
+        }
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(url, headers=headers, json=payload)
+            if response.status_code != 200:
+                logger.error("clu_api_failed", status=response.status_code, body=response.text)
+                return classify_intent(message)
+            data = response.json()
+            # Example CLU response structure:
+            # {
+            #   "result": {
+            #     "prediction": {
+            #       "topIntent": "Housekeeping",
+            #       "intents": { ... },
+            #       ...
+            #     }
+            #   }
+            # }
+            prediction = data.get("result", {}).get("prediction", {})
+            top_intent = prediction.get("topIntent", "").lower()
+            logger.info("clu_prediction", top_intent=top_intent, all_intents=prediction.get("intents"))
+            # Map CLU intents to DepartmentEnum
+            intent_map = {
+                "housekeeping": DepartmentEnum.HOUSEKEEPING,
+                "maintenance": DepartmentEnum.MAINTENANCE,
+                "roomservice": DepartmentEnum.ROOM_SERVICE,
+                "room_service": DepartmentEnum.ROOM_SERVICE,
+                "it": DepartmentEnum.IT,
+                "frontdesk": DepartmentEnum.FRONT_DESK,
+                "front_desk": DepartmentEnum.FRONT_DESK,
+                "security": DepartmentEnum.SECURITY,
+                "concierge": DepartmentEnum.CONCIERGE,
+                "human_assistant": DepartmentEnum.CONCIERGE,  # Example for human handoff intent
+            }
+            for key, value in intent_map.items():
+                if key in top_intent.replace(" ", "").replace("_", "").lower():
+                    return value
+        return classify_intent(message)
+    except Exception as e:
+        logger.error("clu_intent_failed", error=str(e))
         return classify_intent(message)
 
 # --- Azure Service Bus Integration ---
@@ -499,8 +625,8 @@ async def create_chat_request(
         if not msg_text.strip():
             raise HTTPException(status_code=400, detail="Message text required.")
 
-        # Use Azure LUIS for intent classification
-        department = await classify_intent_azure_luis(msg_text)
+        # Use Azure CLU for intent classification
+        department = await classify_intent_clu(msg_text, conversation_id=session_id, user_id=guest_id)
         if not department:
             department = DepartmentEnum.FRONT_DESK
 
