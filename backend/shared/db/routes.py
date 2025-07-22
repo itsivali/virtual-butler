@@ -86,13 +86,13 @@ async def create_notification(notification: Notification, user: User = Depends(g
 async def list_notifications(user: User = Depends(get_current_user), skip: int = 0, limit: int = 10):
     async with DatabaseConnection.get_connection() as conn:
         # Use user.room_id or user.username or user.id as appropriate
-        cursor = conn["notifications"].find({"guest_id": getattr(user, "room_id", None) or getattr(user, "username", None)}).skip(skip).limit(limit)
+        cursor = conn["virtualbutler"]["notifications"].find({"guest_id": getattr(user, "room_id", None) or getattr(user, "username", None)}).skip(skip).limit(limit)
         return [Notification(**doc) async for doc in cursor]
 
 @router.get("/notifications/{notification_id}", response_model=Notification)
 async def get_notification(notification_id: str, user: User = Depends(get_current_user)):
     async with DatabaseConnection.get_connection() as conn:
-        doc = await conn["notifications"].find_one({"notification_id": notification_id})
+        doc = await conn["virtualbutler"]["notifications"].find_one({"notification_id": notification_id})
         if not doc:
             raise HTTPException(status_code=404, detail="Notification not found")
         return Notification(**doc)
@@ -100,7 +100,7 @@ async def get_notification(notification_id: str, user: User = Depends(get_curren
 @router.delete("/notifications/{notification_id}", status_code=204)
 async def delete_notification(notification_id: str, user: User = Depends(get_current_user)):
     async with DatabaseConnection.get_connection() as conn:
-        result = await conn["notifications"].delete_one({"notification_id": notification_id})
+        result = await conn["virtualbutler"]["notifications"].delete_one({"notification_id": notification_id})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Notification not found")
 
@@ -134,7 +134,7 @@ async def chat_websocket(websocket: WebSocket, guest_id: str):
                 updated_at=datetime.utcnow()
             )
             async with DatabaseConnection.get_connection() as conn:
-                await conn["chat_requests"].insert_one(chat_doc.model_dump(by_alias=True))
+                await conn["virtualbutler"]["chat_requests"].insert_one(chat_doc.model_dump(by_alias=True))
             # Echo to all connected staff
             for ws in active_connections.values():
                 if ws != websocket:
@@ -146,5 +146,5 @@ async def chat_websocket(websocket: WebSocket, guest_id: str):
 @router.get("/requests", response_model=List[ChatRequest], dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 async def get_chat_requests(skip: int = 0, limit: int = 10, user=Depends(get_current_user)):
     async with DatabaseConnection.get_connection() as conn:
-        cursor = conn["chat_requests"].find().skip(skip).limit(limit)
+        cursor = conn["virtualbutler"]["chat_requests"].find().skip(skip).limit(limit)
         return [ChatRequest(**doc) async for doc in cursor]
