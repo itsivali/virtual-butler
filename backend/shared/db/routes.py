@@ -5,7 +5,13 @@ from bson import ObjectId
 from fastapi_limiter.depends import RateLimiter
 from shared.db.database import DatabaseConnection
 from shared.db.models import Notification, User, GuestProfile
-from shared.security.auth import get_current_user, is_admin_user, is_staff_user
+try:
+    from shared.security.auth import get_current_user, is_admin_user, is_staff_user
+except ModuleNotFoundError:
+    import sys
+    import os
+    sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+    from shared.security.auth import get_current_user, is_admin_user, is_staff_user
 from shared.services.email import send_verification_email
 
 router = APIRouter(prefix="/api", tags=["Guest", "User", "Notification"])
@@ -14,20 +20,20 @@ router = APIRouter(prefix="/api", tags=["Guest", "User", "Notification"])
 @router.post("/guests", response_model=GuestProfile, dependencies=[Depends(RateLimiter(times=5, seconds=60))])
 async def create_guest(guest: GuestProfile):
     async with DatabaseConnection.get_connection() as conn:
-        await conn["guest_profiles"].insert_one(guest.dict())
+        await conn["virtualbutler"]["guest_profiles"].insert_one(guest.dict())
         return guest
 
 @router.get("/guests", response_model=List[GuestProfile])
 async def list_guests(q: Optional[str] = Query(None), skip: int = 0, limit: int = 10):
     async with DatabaseConnection.get_connection() as conn:
         query = {"$or": [{"name": {"$regex": q, "$options": "i"}}, {"email": {"$regex": q, "$options": "i"}}]} if q else {}
-        cursor = conn["guest_profiles"].find(query).skip(skip).limit(limit)
+        cursor = conn["virtualbutler"]["guest_profiles"].find(query).skip(skip).limit(limit)
         return [GuestProfile(**doc) async for doc in cursor]
 
 @router.get("/guests/{guest_id}", response_model=GuestProfile)
 async def get_guest(guest_id: str):
     async with DatabaseConnection.get_connection() as conn:
-        doc = await conn["guest_profiles"].find_one({"guest_id": guest_id})
+        doc = await conn["virtualbutler"]["guest_profiles"].find_one({"guest_id": guest_id})
         if not doc:
             raise HTTPException(status_code=404, detail="Guest not found")
         return GuestProfile(**doc)
@@ -35,13 +41,13 @@ async def get_guest(guest_id: str):
 @router.put("/guests/{guest_id}", response_model=GuestProfile)
 async def update_guest(guest_id: str, guest: GuestProfile):
     async with DatabaseConnection.get_connection() as conn:
-        await conn["guest_profiles"].update_one({"guest_id": guest_id}, {"$set": guest.dict()})
+        await conn["virtualbutler"]["guest_profiles"].update_one({"guest_id": guest_id}, {"$set": guest.dict()})
         return guest
 
 @router.delete("/guests/{guest_id}", status_code=204)
 async def delete_guest(guest_id: str):
     async with DatabaseConnection.get_connection() as conn:
-        result = await conn["guest_profiles"].delete_one({"guest_id": guest_id})
+        result = await conn["virtualbutler"]["guest_profiles"].delete_one({"guest_id": guest_id})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="Guest not found")
 
@@ -50,12 +56,17 @@ async def delete_guest(guest_id: str):
 @router.get("/users", response_model=List[User], dependencies=[Depends(is_admin_user)])
 async def list_users(skip: int = 0, limit: int = 10):
     async with DatabaseConnection.get_connection() as conn:
-        cursor = conn["users"].find().skip(skip).limit(limit)
+        if conn is None:
+            raise HTTPException(status_code=500, detail="Database connection failed")
+        db = conn["virtualbutler"]
+        cursor = db["users"].find().skip(skip).limit(limit)
         return [User(**doc) async for doc in cursor]
 
 @router.get("/users/{user_id}", response_model=User)
 async def get_user(user_id: str, current_user=Depends(get_current_user)):
     async with DatabaseConnection.get_connection() as conn:
+        if conn is None:
+            raise HTTPException(status_code=500, detail="Database connection failed")
         doc = await conn["users"].find_one({"_id": ObjectId(user_id)})
         if not doc:
             raise HTTPException(status_code=404, detail="User not found")
@@ -64,12 +75,16 @@ async def get_user(user_id: str, current_user=Depends(get_current_user)):
 @router.put("/users/{user_id}", response_model=User)
 async def update_user(user_id: str, user: User, current_user=Depends(is_admin_user)):
     async with DatabaseConnection.get_connection() as conn:
+        if conn is None:
+            raise HTTPException(status_code=500, detail="Database connection failed")
         await conn["users"].update_one({"_id": ObjectId(user_id)}, {"$set": user.dict(exclude_unset=True)})
         return user
 
 @router.delete("/users/{user_id}", status_code=204)
 async def delete_user(user_id: str, current_user=Depends(is_admin_user)):
     async with DatabaseConnection.get_connection() as conn:
+        if conn is None:
+            raise HTTPException(status_code=500, detail="Database connection failed")
         result = await conn["users"].delete_one({"_id": ObjectId(user_id)})
         if result.deleted_count == 0:
             raise HTTPException(status_code=404, detail="User not found")
@@ -79,6 +94,8 @@ async def delete_user(user_id: str, current_user=Depends(is_admin_user)):
 @router.post("/notifications", response_model=Notification)
 async def create_notification(notification: Notification, user: User = Depends(get_current_user)):
     async with DatabaseConnection.get_connection() as conn:
+        if conn is None:
+            raise HTTPException(status_code=500, detail="Database connection failed")
         await conn["notifications"].insert_one(notification.dict(by_alias=True))
         return notification
 
