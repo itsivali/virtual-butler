@@ -225,7 +225,9 @@ async def classify_intent_azure_luis(message: str) -> Optional[DepartmentEnum]:
         return classify_intent(message)
 
 # --- Conversational Language Understanding (CLU) Intent Classification ---
-async def classify_intent_clu(message: str, conversation_id: str = None, user_id: str = None) -> Optional[DepartmentEnum]:
+from typing import Optional
+
+async def classify_intent_clu(message: str, conversation_id: Optional[str] = None, user_id: Optional[str] = None) -> Optional[DepartmentEnum]:
     """
     Uses Azure Conversational Language Understanding (CLU) to extract the top intent from a message.
     Requires the following environment variables:

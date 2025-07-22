@@ -34,6 +34,8 @@ STAFF_USERS = [
 
 async def seed_staff():
     async with DatabaseConnection.get_connection() as conn:
+        if conn is None:
+            raise RuntimeError("Database connection failed (conn is None)")
         staff_collection = conn["virtualbutler"]["staff_profiles"]
         for staff in STAFF_USERS:
             await staff_collection.update_one(

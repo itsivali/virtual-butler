@@ -60,6 +60,26 @@ class BaseDBModel(BaseModel):
         use_enum_values = True
         arbitrary_types_allowed = True
         
+    # --- User Model ---
+class User(BaseDBModel):
+    username: str = Field(..., description="Username for login or display")
+    first_name: str = Field(..., description="User's first name")
+    last_name: str = Field(..., description="User's last name")
+    room_id: Optional[str] = Field(None, description="Room ID assigned to the guest")
+    chat_history: list = Field(default_factory=list, description="List of chat messages or chat request IDs")
+    check_in_date: Optional[datetime] = Field(None, description="Check-in date for the guest")
+
+    class Config:
+        schema_extra = {
+            "example": {
+                "username": "jdoe",
+                "first_name": "John",
+                "last_name": "Doe",
+                "room_id": "101",
+                "chat_history": ["req_123", "req_124"],
+                "check_in_date": "2025-07-22T12:00:00Z"
+            }
+        }
     @validator("id", pre=True)
     def validate_object_id(cls, v):
         if v is None:

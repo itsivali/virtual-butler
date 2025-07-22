@@ -23,6 +23,8 @@ GUEST_USER = {
 
 async def seed_guest():
     async with DatabaseConnection.get_connection() as conn:
+        if conn is None:
+            raise RuntimeError("Database connection failed (conn is None)")
         guest_collection = conn["virtualbutler"]["guest_profiles"]
         await guest_collection.update_one(
             {"guest_id": GUEST_USER["guest_id"]},

@@ -85,7 +85,8 @@ async def create_notification(notification: Notification, user: User = Depends(g
 @router.get("/notifications", response_model=List[Notification])
 async def list_notifications(user: User = Depends(get_current_user), skip: int = 0, limit: int = 10):
     async with DatabaseConnection.get_connection() as conn:
-        cursor = conn["notifications"].find({"guest_id": user.email}).skip(skip).limit(limit)
+        # Use user.room_id or user.username or user.id as appropriate
+        cursor = conn["notifications"].find({"guest_id": getattr(user, "room_id", None) or getattr(user, "username", None)}).skip(skip).limit(limit)
         return [Notification(**doc) async for doc in cursor]
 
 @router.get("/notifications/{notification_id}", response_model=Notification)
@@ -105,20 +106,12 @@ async def delete_notification(notification_id: str, user: User = Depends(get_cur
 
 
 # ---------------------- REAL-TIME CHAT ----------------------
-clients: dict[str, WebSocket] = {}
 
-@router.websocket("/ws/{guest_id}")
-async def websocket_endpoint(websocket: WebSocket, guest_id: str):
-    await websocket.accept()
-    clients[guest_id] = websocket
-    try:
-        while True:
-            data = await websocket.receive_text()
-            # Broadcast message to same guest (loopback or save to DB)
-            await websocket.send_text(f"Message received: {data}")
-    except WebSocketDisconnect:
-        del clients[guest_id]
-# Chat Persistence + Realtime
+# --- Real-time Chat WebSocket (single endpoint, persistence + broadcast) ---
+from shared.db.models import ChatRequest, DepartmentEnum, StatusEnum
+
+active_connections: dict[str, WebSocket] = {}
+
 @router.websocket("/ws/{guest_id}")
 async def chat_websocket(websocket: WebSocket, guest_id: str):
     await websocket.accept()
@@ -136,6 +129,7 @@ async def chat_websocket(websocket: WebSocket, guest_id: str):
                 message=message,
                 department=DepartmentEnum.FRONT_DESK,  # Optionally route
                 status=StatusEnum.PENDING,
+                sentiment=0.0,
                 created_at=datetime.utcnow(),
                 updated_at=datetime.utcnow()
             )
